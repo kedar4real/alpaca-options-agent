@@ -1,0 +1,27 @@
+[project]
+name = "trading-agent"
+version = "0.1.0"
+description = "Autonomous SPY options trading agent (Alpaca x LabLab.ai hackathon)"
+readme = "README.md"
+# Pinned to 3.12: alpaca-py's transitive deps (pandas 3, numpy 2.5) lacked
+# 3.14 wheels at setup time.
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "alpaca-py>=0.44.0",
+    "numpy>=2.5.2",
+    "pandas>=3.0.5",
+    "pandas-market-calendars>=5.0",
+    "python-dotenv>=1.2.3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
+[project.scripts]
+trading-agent = "trading_agent:main"
+
+[build-system]
+requires = ["uv_build>=0.12.7,<0.13.0"]
+build-backend = "uv_build"

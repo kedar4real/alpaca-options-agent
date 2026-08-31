@@ -314,13 +314,14 @@ def fetch_option_chain(
     creds: AlpacaCredentials,
     expiry: date | None = None,
     *,
+    underlying: str = UNDERLYING,
     expiry_gte: date | None = None,
     expiry_lte: date | None = None,
     feed: OptionsFeed = OptionsFeed.INDICATIVE,
     spot: float | None = None,
     strike_window_pct: float | None = STRIKE_WINDOW_PCT,
 ) -> dict:
-    """Return ``{occ_symbol: OptionsSnapshot}`` for SPY.
+    """Return ``{occ_symbol: OptionsSnapshot}`` for ``underlying`` (default SPY).
 
     Pass ``expiry`` for a single expiration date, or ``expiry_gte`` /
     ``expiry_lte`` for a date range. With ``spot`` set and a non-zero
@@ -328,7 +329,7 @@ def fetch_option_chain(
     filter is optional; omitting all of them pulls the entire chain (large).
     """
     client = OptionHistoricalDataClient(creds.api_key, creds.secret_key)
-    kwargs: dict[str, object] = {"underlying_symbol": UNDERLYING, "feed": feed}
+    kwargs: dict[str, object] = {"underlying_symbol": underlying, "feed": feed}
     if expiry is not None:
         kwargs["expiration_date"] = expiry
     if expiry_gte is not None:

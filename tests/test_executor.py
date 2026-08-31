@@ -251,3 +251,67 @@ def test_from_iron_condor_plan_rejects_ineligible_plan_even_with_legs_and_size()
     assert bad.legs and bad.suggested_contracts  # would have passed the old check
     with pytest.raises(ValueError, match="did not approve"):
         ex.from_iron_condor_plan(bad)
+
+
+# --------------------------------------------------------------------------- #
+# Multi-structure support: 2-leg MLEG + from_plan + max_loss passthrough
+# --------------------------------------------------------------------------- #
+def _strangle_plan(*, size=2, debit_per_contract=210.0):
+    from trading_agent.alpaca_trader import OptionContract
+    from trading_agent.strategy import CondorLeg, IronCondorPlan
+
+    def contract(symbol, strike, right, mid):
+        return OptionContract(
+            symbol=symbol, underlying="QQQ", expiry=date(2026, 9, 1), right=right,
+            strike=strike, bid=mid - 0.05, ask=mid + 0.05, bid_size=1, ask_size=1,
+            mid=mid, spread=0.1, spread_pct=5.0, delta=0.25, abs_delta=0.25,
+            implied_volatility=0.2,
+        )
+
+    debit = debit_per_contract / 100.0
+    return IronCondorPlan(
+        eligible=True, reason="long strangle test",
+        expiry=date(2026, 9, 1),
+        legs=[
+            CondorLeg("buy", "put", contract("QQQ...P", 480.0, "put", debit / 2)),
+            CondorLeg("buy", "call", contract("QQQ...C", 500.0, "call", debit / 2)),
+        ],
+        net_credit=-debit, wing_width=0.0, credit_to_width=None,
+        max_loss_per_contract=debit_per_contract, suggested_contracts=size,
+        structure="long_strangle", symbol="QQQ",
+    )
+
+
+def test_from_plan_is_the_alias_for_from_iron_condor_plan() -> None:
+    assert ex.from_plan is ex.from_iron_condor_plan
+
+
+def test_from_plan_carries_max_loss_for_a_debit_structure() -> None:
+    po = ex.from_plan(_strangle_plan(size=2, debit_per_contract=210.0))
+    assert po.quantity == 2
+    assert po.net_credit < 0                    # net debit
+    assert po.max_loss == 210.0
+    assert po.risk_dollars == pytest.approx(420.0)
+    assert [(lg.action, lg.right) for lg in po.legs] == [("buy", "put"), ("buy", "call")]
+
+
+def test_two_leg_strangle_builds_a_valid_mleg_request() -> None:
+    po = ex.from_plan(_strangle_plan(size=2, debit_per_contract=210.0))
+    req = ex._build_mleg_request(po)
+    assert req.order_class == OrderClass.MLEG
+    assert len(req.legs) == 2
+    assert [leg.side for leg in req.legs] == [OrderSide.BUY, OrderSide.BUY]
+    assert req.limit_price == pytest.approx(2.10)   # abs(net debit)
+
+
+def test_build_mleg_request_still_rejects_three_leg_orders() -> None:
+    with pytest.raises(ValueError):
+        ex._build_mleg_request(ProposedOrder(4.0, 1.2, 1, CONDOR[:3]))
+
+
+def test_strangle_round_trips_through_submit() -> None:
+    fake = FakeTradingClient()
+    po = ex.from_plan(_strangle_plan(size=2))
+    res = ex.submit_iron_condor(po, account(), client=fake)
+    assert res.submitted is True
+    assert len(fake.submitted[0].legs) == 2

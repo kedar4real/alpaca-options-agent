@@ -128,3 +128,56 @@ def test_realized_vol_bigger_swings_give_higher_vol() -> None:
     calm = d.calculate_realized_vol(_prices_from_log_returns(100.0, [0.002, -0.002] * 5))
     wild = d.calculate_realized_vol(_prices_from_log_returns(100.0, [0.02, -0.02] * 5))
     assert wild > calm > 0.0
+
+
+# --------------------------------------------------------------------------- #
+# log_iv_reading — one shared file, symbol column, appended every cycle
+# --------------------------------------------------------------------------- #
+def _rows(path):
+    import csv
+    with open(path, newline="") as f:
+        return list(csv.DictReader(f))
+
+
+def test_log_iv_reading_creates_file_with_new_schema(tmp_path) -> None:
+    p = tmp_path / "iv.csv"
+    d.log_iv_reading("SPY", 0.20, 0.14, 0.06, log_path=str(p))
+    rows = _rows(p)
+    assert list(rows[0].keys()) == ["timestamp", "symbol", "iv", "rv", "spread"]
+    assert rows[0]["symbol"] == "SPY" and rows[0]["iv"] == "0.2"
+    assert rows[0]["rv"] == "0.14" and rows[0]["spread"] == "0.06"
+
+
+def test_log_iv_reading_appends_every_call_for_every_ticker(tmp_path) -> None:
+    p = tmp_path / "iv.csv"
+    d.log_iv_reading("SPY", 0.20, 0.14, 0.06, log_path=str(p))
+    d.log_iv_reading("QQQ", 0.18, 0.22, -0.04, log_path=str(p))
+    d.log_iv_reading("SPY", 0.21, 0.14, 0.07, log_path=str(p))   # same day, still appended
+    rows = _rows(p)
+    assert len(rows) == 3
+    assert [r["symbol"] for r in rows] == ["SPY", "QQQ", "SPY"]
+
+
+def test_read_iv_history_filters_by_symbol_and_collapses_to_one_per_day(tmp_path) -> None:
+    p = tmp_path / "iv.csv"
+    p.write_text(
+        "timestamp,symbol,iv,rv,spread\n"
+        "2026-08-30T10:00:00,SPY,0.11,,\n"
+        "2026-08-31T10:00:00,SPY,0.12,,\n"
+        "2026-08-31T15:00:00,SPY,0.19,,\n"    # later same-day reading wins
+        "2026-08-31T15:00:01,QQQ,0.30,,\n"    # other ticker ignored
+        "2026-09-01T10:00:00,SPY,0.13,,\n"
+    )
+    assert d.read_iv_history("SPY", log_path=str(p)) == [0.11, 0.19, 0.13]
+    assert d.read_iv_history("QQQ", log_path=str(p)) == [0.30]
+    assert d.read_iv_history("TLT", log_path=str(p)) == []
+
+
+def test_read_iv_history_tolerates_blank_iv(tmp_path) -> None:
+    p = tmp_path / "iv.csv"
+    p.write_text(
+        "timestamp,symbol,iv,rv,spread\n"
+        "2026-08-31T10:00:00,SPY,,,\n"        # blank iv -> skipped
+        "2026-09-01T10:00:00,SPY,0.13,,\n"
+    )
+    assert d.read_iv_history("SPY", log_path=str(p)) == [0.13]

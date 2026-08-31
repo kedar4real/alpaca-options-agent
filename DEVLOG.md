@@ -1,5 +1,129 @@
 # Dev Log
 
+## 2026-09-01 — Off-Hours Intelligence (Heartbeat / Morning Brief / Post-Mortem)
+
+Added a "genuine autonomy" layer that runs *around* the 15-min trading loop, not
+inside it. **No change to `risk_manager.py`, no change to the `strategy.py` trade
+logic, no new dependency** — pure stdlib observability. New module `offhours.py`
+(pure functions) + timed wiring in `main.py` (gated by markers persisted in the
+session, exactly like the existing daily summary).
+
+**1. Heartbeat.** `main._maybe_heartbeat` emits one line per
+`AGENT_HEARTBEAT_MINUTES` (default 60), market open *or* closed, so the audit
+trail is unbroken 24/7:
+`[YYYY-MM-DD HH:MM] HEARTBEAT: Status: Idle/Active | Connectivity: OK/Error | Memory: N IV readings stored.`
+`Status` = Active when the clock says open; `Connectivity` = Error when
+`get_clock()` threw this loop (the heartbeat still fires from `datetime.now(ET)`);
+`Memory` = raw row count of `iv_history.csv` (`offhours.count_iv_readings`).
+
+**2. Morning Brief.** `_maybe_morning_brief` runs once per day, only inside
+09:00–09:30 ET. `AlpacaConnection.premarket_gaps` pulls each basket ticker's
+reference price and prior daily close → `offhours.TickerGap`. A move of
+`|gap| > AGENT_GAP_ALERT_PCT` (default 0.5%) logs a **PRE-MARKET ALERT** naming
+the ticker and reading it as TRENDING (directional open → favour credit spreads);
+an all-flat basket logs "RANGE-BOUND bias intact".
+
+**3. Nightly Post-Mortem.** `run_cycle` now folds each cycle's `DecisionSummary`
+list into a persisted per-day funnel (`offhours.DailyActivity` in
+`session.daily_activity`, last 10 days kept): ticker scans, trades proposed
+(reached `risk_manager`+), approved (executed), vetoes by `risk_manager` and by
+`risk_officer`, and a regime tally. `_maybe_post_mortem` runs once per day at/after
+16:00 ET and renders the digest — funnel + open-position unrealized P&L
+(`value_condors` sum) + `dominant_regime(...)` ("Overall Range-Bound" etc.) —
+copy-pasteable for a social post or judge review.
+
+**Logging.** `setup_logging` gained a third handler: the `agent.offhours` logger
+writes to `AGENT_ACTIVITY_LOG` (default `logs/agent_activity.log`) **and**
+propagates to the main log + console, so the events are both in one audit file and
+in the normal stream. `run_forever` restructured so a `get_clock()` failure still
+produces an Error heartbeat before the loop sleeps.
+
+**Tests** — +30 (220 → **250**). New `test_offhours.py` (23): exact heartbeat
+format, Active/Idle + OK/Error, hourly `interval_elapsed` gate, 09:00–09:30
+window, `TickerGap` gap %/significance, PRE-MARKET ALERT vs flat, `accumulate_activity`
+funnel (cumulative, plan-less tolerant), `dominant_regime` bucketing,
+`post_mortem_text`, `DailyActivity` round-trip. `test_main.py` +7: `run_cycle`
+accumulates the funnel, session round-trips the off-hours markers, legacy
+`session.json` still loads, `_maybe_heartbeat` once-per-interval + Error path,
+`_maybe_morning_brief` window/once-a-day, `_maybe_post_mortem` after-close/once-a-day.
+
+
+## 2026-09-01 — Multi-ticker basket + dynamic market-regime switch
+
+Expanded the agent from SPY-only iron condors to a 4-ticker basket with a
+volatility-regime strategy switch, without touching the risk limits.
+
+**1. Multi-ticker.** Basket `SPY, QQQ, IWM, TLT` (env `AGENT_TICKERS`).
+`data.get_market_snapshot(symbol, creds=)` and `alpaca_trader.fetch_option_chain(..., underlying=)`
+are now per-ticker; `data.get_current_option_chain` passes the underlying through.
+`main.run_cycle` evaluates each ticker independently in one cycle, logging a
+`DecisionSummary` per ticker. **Exposure stays global** — the max-3-position cap
+is enforced on the shared `AccountState.open_positions`, and `account` is rebuilt
+after each open so the next ticker sees it. One ticker's data failure logs and
+the others continue. `TrackedCondor` gained `symbol` + `structure`.
+
+**2. Efficiency ratio (range-bound filter).** `strategy.efficiency_ratio(prices,
+window=10)` = |net change| / Σ|daily abs changes|; `is_range_bound(prices,
+window=10, threshold=0.3)` -> ER < 0.3 range-bound, ER >= 0.3 trending;
+`trend_direction()` for up/down. `data.get_market_snapshot` now returns
+`daily_closes` (the same 11 closes used for realized vol).
+
+**3. Regime switch.** `strategy.select_regime(snapshot)` -> `RegimeDecision`:
+* **A** — IV-RV spread >= +0.02 *and* IV elevated -> **iron condor**.
+* **B** — spread <= -0.02 *and* ER < 0.3 -> **long strangle** (`plan_long_strangle`,
+  buy ~0.25Δ put + call, net debit, sized so debit ≤ 1.5%).
+* **C** — spread <= -0.02 *and* ER >= 0.3 -> **bull put** (trend up) /
+  **bear call** (trend down) credit spread (`plan_bull_put` / `plan_bear_call`,
+  same 25%-credit and 1.5% gates as the condor).
+`build_strategy_plan()` is the regime-aware entry point (replaces
+`build_iron_condor` in `main`); it **logs the selection explicitly**
+(`REGIME [SPY]: Regime B: Low IV / Range-Bound -> Long Strangle | <detail>`) and
+attaches `regime` / `regime_reason` / `structure` to the plan, which
+`main.evaluate_new_trade` forwards into the `risk_officer` prompt and the daily
+summary. `IronCondorPlan` gained `structure/regime/regime_reason/symbol/direction`
+(alias `StrategyPlan`).
+
+**risk_manager — minimal Gate 5 change only (per the approved plan).**
+`is_defined_risk()` now also returns True for an **all-long** position (every leg
+`buy`, qty > 0) — a long strangle can't lose more than the premium and is never
+naked short; any position with a `sell` leg still goes through the unchanged
+matched-legs rule. `ProposedOrder.max_loss` (optional) lets a debit structure
+hand its true per-contract worst case straight to gate 1, so the **1.5% cap is
+still the source of truth**. No limit value changed.
+
+**executor.** `_build_mleg_request` accepts 2- or 4-leg orders (vertical /
+strangle / condor); `from_plan` alias; `from_iron_condor_plan` passes
+`max_loss=plan.max_loss_per_contract` through.
+
+**risk_officer.** `build_prompt` gained a "STRATEGY REGIME" block (ticker,
+structure, regime, detail) and labels net debit vs credit.
+
+**Tests** — +41 (179 -> **220**): efficiency ratio / range-bound / trend
+direction; `select_regime` A/B/C/none; `plan_long_strangle` + credit-spread
+plans + the 25% gate still applies; `is_defined_risk` all-long (+ still rejects a
+mixed short leg); `ProposedOrder.max_loss` in gate 1; 2-leg MLEG + `from_plan`;
+`decide_exit` debit-aware (strangle +50%/-50% of premium); multi-ticker
+`run_cycle` with the global 3-cap and one-bad-ticker isolation; `TrackedCondor`
+symbol/structure round-trip.
+
+Live check: `python -m trading_agent.strategy {SPY,QQQ,IWM,TLT}` — SPY/QQQ/IWM
+neutral (no trade), **TLT -> Regime B Long Strangle** (`IV 0.061 << RV -0.062`,
+`ER 0.230`), real 82P/83C strangle proposed at $0.20 debit. `iv_history.csv`
+migrated to `timestamp,symbol,iv,rv,spread`, one shared file, appended per ticker
+per cycle (`read_iv_history(symbol)` collapses to one point per day for the
+percentile gate).
+
+## 2026-08-31 — `log_daily_iv()`: one row per calendar day
+
+`log_daily_iv()` appended a row on every call — the loop would have written
+`iv_history.csv` every 15 min, flooding the IV-percentile history with same-day
+points. Now it checks `_has_iv_row_for_date(log_path, today)` first and is a
+**no-op if today's date is already present** (first reading of the day wins), so
+`main.py` can call it every cycle unchanged. `iv_history.csv` cleaned up:
+5 same-day test rows from today collapsed to the day's first reading
+(`2026-08-31T19:13:28 … 0.1337`). `tests/test_data.py` +4 (15 → 19); suite
+**175 → 179**.
+
 ## 2026-08-31 — `main.py`: the autonomous trading loop
 
 `run_forever(Config.from_env())` (also the `trading-agent` console script) runs

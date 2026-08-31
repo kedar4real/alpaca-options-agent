@@ -23,12 +23,15 @@ Run directly::
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from datetime import date
 
 from .alpaca_trader import OptionContract, build_contracts, nth_trading_day
 from .data import get_market_snapshot
 from .risk_manager import MAX_RISK_PER_TRADE_PCT
+
+log = logging.getLogger("strategy")
 
 # --------------------------------------------------------------------------- #
 # Tunables
@@ -50,6 +53,19 @@ MIN_CREDIT_TO_WIDTH = 0.25    # target net credit >= 25% of the wing width
 # i.e. options are pricing in more movement than the underlying has actually made.
 # None in the snapshot (not enough price history) -> the check is skipped.
 MIN_IV_RV_SPREAD = 0.02
+
+# --- Dynamic market-regime switch -------------------------------------------- #
+# "IV >> RV" (rich) -> Regime A ;  "IV << RV" (cheap) -> Regime B / C.
+LOW_IV_RV_SPREAD = -0.02          # IV at least this far BELOW RV counts as "IV << RV"
+EFFICIENCY_RATIO_WINDOW = 10      # trading days for the Kaufman efficiency ratio
+RANGE_BOUND_ER = 0.30            # ER < this -> range-bound ; ER >= this -> trending
+STRANGLE_DELTA_TARGET = 0.25      # long strangle legs: ~0.25 delta each side
+
+REGIME_IRON_CONDOR = "iron_condor"
+REGIME_LONG_STRANGLE = "long_strangle"
+REGIME_BULL_PUT = "bull_put"
+REGIME_BEAR_CALL = "bear_call"
+REGIME_NONE = "none"
 
 # Sizing budget for the proposal: 1.5% of the nominal $100k paper account.
 # MAX_RISK_PER_TRADE_PCT is the single source of truth (shared with risk_manager),
@@ -81,15 +97,26 @@ class IronCondorPlan:
     net_credit: float | None = None          # per spread, in $ (mid-price estimate)
     wing_width: float | None = None          # $, the wider of the two wings
     credit_to_width: float | None = None     # net_credit / wing_width
-    max_loss_per_contract: float | None = None  # $ = (width - credit) * 100
+    max_loss_per_contract: float | None = None  # $ per contract, true worst case
     suggested_contracts: int | None = None   # within MAX_RISK_PER_TRADE
+    # --- market-regime switch tags (set by build_strategy_plan) --- #
+    structure: str = REGIME_IRON_CONDOR       # iron_condor | long_strangle | bull_put | bear_call
+    regime: str | None = None                 # human label, e.g. "Regime B: Low IV / Range-Bound"
+    regime_reason: str | None = None          # quantitative detail (logged, sent to risk_officer)
+    symbol: str | None = None                 # basket ticker this plan is for
+    direction: str | None = None              # "up" | "down" for credit spreads
 
     def describe(self) -> str:
         lines = [
             f"eligible:      {self.eligible}",
             f"reason:        {self.reason}",
-            f"IV mode:       {self.iv_regime_mode}",
+            f"structure:     {self.structure}" + (f"  ({self.symbol})" if self.symbol else ""),
         ]
+        if self.regime:
+            lines.append(f"regime:        {self.regime}")
+        if self.regime_reason:
+            lines.append(f"regime detail: {self.regime_reason}")
+        lines.append(f"IV mode:       {self.iv_regime_mode}")
         if self.underlying_price is not None:
             lines.append(f"underlying:    ${self.underlying_price:.2f}")
         if self.iv_rv_spread is not None:
@@ -102,18 +129,156 @@ class IronCondorPlan:
                 f"  {leg.action:<4} {leg.right:<4} {c.strike:>8.2f}  "
                 f"d{c.abs_delta:0.3f}  bid {c.bid:6.2f}  ask {c.ask:6.2f}  mid {c.mid:6.2f}"
             )
-        if self.net_credit is not None and self.wing_width is not None:
+        if self.net_credit is not None and self.credit_to_width is not None:
             lines.append(
                 f"net credit:    {self.net_credit:.2f}  "
                 f"({self.credit_to_width:.1%} of {self.wing_width:.2f} wing; "
                 f"target {MIN_CREDIT_TO_WIDTH:.0%})"
             )
+        elif self.net_credit is not None:
+            kind = "debit" if self.net_credit < 0 else "credit"
+            lines.append(f"net {kind}:     {abs(self.net_credit):.2f}")
         if self.max_loss_per_contract is not None:
             lines.append(
                 f"max loss:      ${self.max_loss_per_contract:.0f}/contract  ->  "
                 f"{self.suggested_contracts} contract(s) within ${MAX_RISK_PER_TRADE:.0f} cap"
             )
         return "\n".join(lines)
+
+
+# ``IronCondorPlan`` is now the shared result type for every structure the
+# regime switch can pick. Alias for readability in new code.
+StrategyPlan = IronCondorPlan
+
+
+# --------------------------------------------------------------------------- #
+# Range-bound filter — Kaufman efficiency ratio
+# --------------------------------------------------------------------------- #
+def efficiency_ratio(prices, window: int = EFFICIENCY_RATIO_WINDOW):
+    """ER = |net change over window| / sum(|daily absolute changes|).
+
+    1.0 = a straight line (perfectly trending); ~0 = lots of back-and-forth with
+    little net progress (range-bound). Returns ``None`` if fewer than
+    ``window + 1`` prices are available; ``0.0`` for a perfectly flat series.
+    """
+    if prices is None or len(prices) < window + 1:
+        return None
+    seg = list(prices)[-(window + 1):]
+    net = abs(seg[-1] - seg[0])
+    path = sum(abs(seg[i] - seg[i - 1]) for i in range(1, len(seg)))
+    if path == 0:
+        return 0.0
+    return round(net / path, 4)
+
+
+def is_range_bound(prices, window: int = 10, threshold: float = 0.3):
+    """``True`` when ER < ``threshold`` (range-bound), ``False`` when ER >=
+    ``threshold`` (trending), ``None`` when there isn't enough price history."""
+    er = efficiency_ratio(prices, window)
+    if er is None:
+        return None
+    return er < threshold
+
+
+def trend_direction(prices, window: int = EFFICIENCY_RATIO_WINDOW):
+    """``"up"`` / ``"down"`` / ``"flat"`` over the window; ``None`` if too short."""
+    if prices is None or len(prices) < window + 1:
+        return None
+    seg = list(prices)[-(window + 1):]
+    change = seg[-1] - seg[0]
+    if change > 0:
+        return "up"
+    if change < 0:
+        return "down"
+    return "flat"
+
+
+# --------------------------------------------------------------------------- #
+# Dynamic market-regime switch
+# --------------------------------------------------------------------------- #
+@dataclass(frozen=True)
+class RegimeDecision:
+    regime: str                       # a REGIME_* structure, or REGIME_NONE
+    label: str                        # human-readable, for logs / daily summary
+    reason: str                       # quantitative detail, sent to the risk_officer
+    efficiency_ratio: float | None = None
+    direction: str | None = None      # "up" | "down" for Regime C
+
+
+def select_regime(
+    snapshot: dict,
+    *,
+    min_iv_rv: float = MIN_IV_RV_SPREAD,
+    low_iv_rv: float = LOW_IV_RV_SPREAD,
+    er_threshold: float = RANGE_BOUND_ER,
+) -> RegimeDecision:
+    """Pick the structure for the current quantitative regime.
+
+    * **Regime A** — IV > RV (spread >= ``min_iv_rv``) *and* IV elevated
+      (``iv_regime.trade_eligible``) -> **Iron Condor**.
+    * **Regime B** — IV << RV (spread <= ``low_iv_rv``) *and* range-bound
+      (ER < ``er_threshold``) -> **Long Strangle** (bet on vol mean-reversion).
+    * **Regime C** — IV << RV *and* trending (ER >= ``er_threshold``) ->
+      **Bull Put** if the trend is up, **Bear Call** if it is down.
+    * Anything else -> no trade this cycle.
+    """
+    atm_iv = snapshot.get("atm_iv")
+    spread = snapshot.get("iv_rv_spread")
+    iv_regime = snapshot.get("iv_regime")
+    iv_elevated = bool(getattr(iv_regime, "trade_eligible", False))
+    closes = snapshot.get("daily_closes")
+    er = efficiency_ratio(closes)
+
+    if atm_iv is None or spread is None:
+        return RegimeDecision(REGIME_NONE, "No trade", "ATM IV or realized vol unavailable", er)
+
+    if spread >= min_iv_rv and iv_elevated:
+        return RegimeDecision(
+            REGIME_IRON_CONDOR,
+            "Regime A: High Volatility -> Iron Condor",
+            f"IV {atm_iv:.3f} > RV (spread {spread:+.3f} >= {min_iv_rv:+.3f}) and IV elevated",
+            er,
+        )
+
+    if spread <= low_iv_rv:
+        rb = is_range_bound(closes, threshold=er_threshold)
+        if rb is None:
+            return RegimeDecision(
+                REGIME_NONE, "No trade",
+                f"IV << RV (spread {spread:+.3f}) but not enough price history for the efficiency ratio",
+                er,
+            )
+        if rb:
+            return RegimeDecision(
+                REGIME_LONG_STRANGLE,
+                "Regime B: Low IV / Range-Bound -> Long Strangle",
+                f"IV {atm_iv:.3f} << RV (spread {spread:+.3f} <= {low_iv_rv:+.3f}); "
+                f"ER {er:.3f} < {er_threshold} (range-bound); betting on volatility mean-reversion",
+                er,
+            )
+        direction = trend_direction(closes)
+        if direction not in ("up", "down"):
+            return RegimeDecision(
+                REGIME_NONE, "No trade",
+                f"IV << RV and trending (ER {er:.3f} >= {er_threshold}) but no clear direction",
+                er,
+            )
+        structure = REGIME_BULL_PUT if direction == "up" else REGIME_BEAR_CALL
+        name = "Bull Put" if structure == REGIME_BULL_PUT else "Bear Call"
+        return RegimeDecision(
+            structure,
+            f"Regime C: Low IV / Trending {direction} -> {name} Credit Spread",
+            f"IV {atm_iv:.3f} << RV (spread {spread:+.3f} <= {low_iv_rv:+.3f}); "
+            f"ER {er:.3f} >= {er_threshold} (trending {direction})",
+            er, direction,
+        )
+
+    return RegimeDecision(
+        REGIME_NONE, "No trade",
+        f"neutral volatility regime (IV-RV spread {spread:+.3f} between "
+        f"{low_iv_rv:+.3f} and {min_iv_rv:+.3f})",
+        er,
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -133,14 +298,29 @@ def pick_expiry(
     return listed[0] if listed else None
 
 
-def select_short_leg(legs: list[OptionContract]) -> OptionContract | None:
-    """Contract nearest SHORT_DELTA_TARGET, preferring the 0.20-0.25 band."""
+def select_leg_near_delta(
+    legs: list[OptionContract],
+    target: float,
+    *,
+    lo: float | None = None,
+    hi: float | None = None,
+) -> OptionContract | None:
+    """Graded contract whose ``abs_delta`` is closest to ``target``. If ``lo``/``hi``
+    are given, contracts inside that band are preferred (but not required)."""
     graded = [c for c in legs if c.abs_delta is not None]
     if not graded:
         return None
-    band = [c for c in graded if SHORT_DELTA_MIN <= c.abs_delta <= SHORT_DELTA_MAX]
-    pool = band or graded
-    return min(pool, key=lambda c: abs(c.abs_delta - SHORT_DELTA_TARGET))
+    if lo is not None and hi is not None:
+        band = [c for c in graded if lo <= c.abs_delta <= hi]
+        graded = band or graded
+    return min(graded, key=lambda c: abs(c.abs_delta - target))
+
+
+def select_short_leg(legs: list[OptionContract]) -> OptionContract | None:
+    """Contract nearest SHORT_DELTA_TARGET, preferring the 0.20-0.25 band."""
+    return select_leg_near_delta(
+        legs, SHORT_DELTA_TARGET, lo=SHORT_DELTA_MIN, hi=SHORT_DELTA_MAX
+    )
 
 
 def select_long_leg(
@@ -298,7 +478,11 @@ def plan_iron_condor(
 
 
 def build_iron_condor(snapshot: dict | None = None, *, today: date | None = None) -> IronCondorPlan:
-    """Fetch a market snapshot (if not supplied) and propose an iron condor."""
+    """Fetch a market snapshot (if not supplied) and propose an iron condor.
+
+    Kept for callers that want a condor unconditionally. The regime-aware entry
+    point is :func:`build_strategy_plan`.
+    """
     snap = snapshot or get_market_snapshot()
     contracts = [c for c in build_contracts(snap["chain"]) if c.abs_delta is not None]
     return plan_iron_condor(
@@ -310,5 +494,206 @@ def build_iron_condor(snapshot: dict | None = None, *, today: date | None = None
     )
 
 
+# --------------------------------------------------------------------------- #
+# Regime B — long strangle (net debit; inherently defined-risk = premium paid)
+# --------------------------------------------------------------------------- #
+def plan_long_strangle(
+    contracts: list[OptionContract],
+    *,
+    underlying_price: float | None,
+    iv_regime,
+    iv_rv_spread: float | None = None,
+    today: date | None = None,
+) -> IronCondorPlan:
+    """Buy a ~0.25-delta OTM put and a ~0.25-delta OTM call. Max loss = net debit
+    paid; sized so that stays within ``MAX_RISK_PER_TRADE`` (1.5%)."""
+    mode = getattr(iv_regime, "mode", None)
+
+    def result(eligible: bool, reason: str, **kw) -> IronCondorPlan:
+        return IronCondorPlan(
+            eligible=eligible, reason=reason, underlying_price=underlying_price,
+            iv_regime_mode=mode, iv_rv_spread=iv_rv_spread,
+            structure=REGIME_LONG_STRANGLE, **kw,
+        )
+
+    expiry = pick_expiry(contracts, today=today)
+    if expiry is None:
+        return result(False, "no listed expiry in the 1-3 trading-day window")
+
+    at_expiry = [c for c in contracts if c.expiry == expiry]
+    long_put = select_leg_near_delta(
+        [c for c in at_expiry if c.right == "put"], STRANGLE_DELTA_TARGET
+    )
+    long_call = select_leg_near_delta(
+        [c for c in at_expiry if c.right == "call"], STRANGLE_DELTA_TARGET
+    )
+    if long_put is None or long_call is None:
+        return result(False, "could not find ~0.25-delta strangle legs", expiry=expiry)
+
+    legs = [CondorLeg("buy", "put", long_put), CondorLeg("buy", "call", long_call)]
+    debit = long_put.mid + long_call.mid                 # $ per spread paid
+    max_loss = debit * CONTRACT_MULTIPLIER               # per contract worst case
+    n = int(MAX_RISK_PER_TRADE // max_loss) if max_loss > 0 else 0
+    tag = (
+        f"expiry {expiry.isoformat()}; {long_put.strike:.0f}P / {long_call.strike:.0f}C; "
+        f"debit {debit:.2f}"
+    )
+    priced = dict(
+        expiry=expiry, legs=legs, net_credit=-debit, wing_width=0.0,
+        max_loss_per_contract=max_loss, suggested_contracts=n,
+    )
+    if debit <= 0:
+        return result(False, f"strangle debit <= 0 — bad quotes ({tag})", **priced)
+    if n < 1:
+        return result(
+            False,
+            f"strangle debit ${max_loss:.0f}/contract exceeds ${MAX_RISK_PER_TRADE:.0f} risk cap ({tag})",
+            **priced,
+        )
+    return result(True, f"long strangle — betting on volatility expansion ({tag})", **priced)
+
+
+# --------------------------------------------------------------------------- #
+# Regime C — vertical credit spreads (bull put / bear call)
+# --------------------------------------------------------------------------- #
+def _plan_vertical(
+    contracts: list[OptionContract],
+    right: str,
+    structure: str,
+    *,
+    underlying_price: float | None,
+    iv_regime,
+    iv_rv_spread: float | None = None,
+    today: date | None = None,
+) -> IronCondorPlan:
+    mode = getattr(iv_regime, "mode", None)
+
+    def result(eligible: bool, reason: str, **kw) -> IronCondorPlan:
+        return IronCondorPlan(
+            eligible=eligible, reason=reason, underlying_price=underlying_price,
+            iv_regime_mode=mode, iv_rv_spread=iv_rv_spread, structure=structure, **kw,
+        )
+
+    expiry = pick_expiry(contracts, today=today)
+    if expiry is None:
+        return result(False, "no listed expiry in the 1-3 trading-day window")
+
+    legs_for_right = [c for c in contracts if c.expiry == expiry and c.right == right]
+    short = select_short_leg(legs_for_right)
+    if short is None:
+        return result(False, f"no short {right} near 0.20-0.25 delta", expiry=expiry)
+    long_leg, rule = select_long_leg(legs_for_right, short, right)
+    if long_leg is None:
+        return result(False, f"no protective long {right} ({rule})", expiry=expiry)
+
+    legs = [CondorLeg("sell", right, short), CondorLeg("buy", right, long_leg)]
+    credit = short.mid - long_leg.mid
+    width = abs(short.strike - long_leg.strike)
+    ctw = credit / width if width > 0 else 0.0
+    max_loss = (width - credit) * CONTRACT_MULTIPLIER
+    n = int(MAX_RISK_PER_TRADE // max_loss) if max_loss > 0 else 0
+    tag = (
+        f"expiry {expiry.isoformat()}; {short.strike:.0f}/{long_leg.strike:.0f} ({rule}); "
+        f"credit {credit:.2f} / width {width:.2f} = {ctw:.1%}"
+    )
+    priced = dict(
+        expiry=expiry, legs=legs, net_credit=credit, wing_width=width,
+        credit_to_width=ctw, max_loss_per_contract=max_loss, suggested_contracts=n,
+    )
+    if credit <= 0:
+        return result(False, f"net credit <= 0 ({tag})", **priced)
+    if ctw < MIN_CREDIT_TO_WIDTH:
+        return result(
+            False, f"credit/width {ctw:.1%} below {MIN_CREDIT_TO_WIDTH:.0%} target ({tag})", **priced
+        )
+    if n < 1:
+        return result(
+            False,
+            f"max loss ${max_loss:.0f}/contract exceeds ${MAX_RISK_PER_TRADE:.0f} risk cap ({tag})",
+            **priced,
+        )
+    kind = "bull put" if structure == REGIME_BULL_PUT else "bear call"
+    return result(True, f"{kind} credit spread — meets credit and risk criteria ({tag})", **priced)
+
+
+def plan_bull_put(contracts, *, underlying_price, iv_regime, iv_rv_spread=None, today=None):
+    """Sell a put spread below the market — used when the trend is up."""
+    return _plan_vertical(
+        contracts, "put", REGIME_BULL_PUT, underlying_price=underlying_price,
+        iv_regime=iv_regime, iv_rv_spread=iv_rv_spread, today=today,
+    )
+
+
+def plan_bear_call(contracts, *, underlying_price, iv_regime, iv_rv_spread=None, today=None):
+    """Sell a call spread above the market — used when the trend is down."""
+    return _plan_vertical(
+        contracts, "call", REGIME_BEAR_CALL, underlying_price=underlying_price,
+        iv_regime=iv_regime, iv_rv_spread=iv_rv_spread, today=today,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Regime-aware entry point
+# --------------------------------------------------------------------------- #
+_PLAN_FOR_REGIME = {
+    REGIME_IRON_CONDOR: plan_iron_condor,
+    REGIME_LONG_STRANGLE: plan_long_strangle,
+    REGIME_BULL_PUT: plan_bull_put,
+    REGIME_BEAR_CALL: plan_bear_call,
+}
+
+
+def build_strategy_plan(
+    snapshot: dict | None = None, *, today: date | None = None
+) -> IronCondorPlan:
+    """Detect the market regime for ``snapshot`` and build the matching structure.
+
+    Regime A -> Iron Condor, B -> Long Strangle, C -> Bull Put / Bear Call.
+    The regime choice is logged explicitly (picked up by the daily summary) and
+    attached to the returned plan for the risk_officer prompt. The downstream
+    flow is unchanged: this returns an ``IronCondorPlan`` that
+    ``executor.from_plan`` / ``risk_manager.check_order`` consume as before.
+    """
+    snap = snapshot or get_market_snapshot()
+    symbol = snap.get("symbol") or snap.get("underlying") or "?"
+    decision = select_regime(snap)
+
+    log.info(
+        "REGIME [%s]: %s | %s", symbol, decision.label, decision.reason
+    )
+
+    if decision.regime == REGIME_NONE:
+        plan = IronCondorPlan(
+            eligible=False,
+            reason=f"no tradeable regime — {decision.reason}",
+            underlying_price=snap.get("current_price"),
+            iv_regime_mode=getattr(snap.get("iv_regime"), "mode", None),
+            iv_rv_spread=snap.get("iv_rv_spread"),
+            structure=REGIME_NONE,
+        )
+    else:
+        contracts = [c for c in build_contracts(snap["chain"]) if c.abs_delta is not None]
+        plan = _PLAN_FOR_REGIME[decision.regime](
+            contracts,
+            underlying_price=snap.get("current_price"),
+            iv_regime=snap["iv_regime"],
+            iv_rv_spread=snap.get("iv_rv_spread"),
+            today=today,
+        )
+
+    plan.regime = decision.label
+    plan.regime_reason = decision.reason
+    plan.symbol = symbol
+    plan.direction = decision.direction
+
+    verb = "selected" if plan.eligible else "not eligible"
+    log.info("STRATEGY [%s]: %s %s — %s", symbol, plan.structure, verb, plan.reason)
+    return plan
+
+
 if __name__ == "__main__":
-    print(build_iron_condor().describe())
+    import sys
+
+    sym = sys.argv[1].upper() if len(sys.argv) > 1 else None
+    snap = get_market_snapshot(sym) if sym else get_market_snapshot()
+    print(build_strategy_plan(snap).describe())

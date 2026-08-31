@@ -78,17 +78,28 @@ def from_iron_condor_plan(plan: "IronCondorPlan") -> ProposedOrder:
         for leg in plan.legs
     )
     return ProposedOrder(
-        wing_width=plan.wing_width,
+        wing_width=plan.wing_width or 0.0,
         net_credit=plan.net_credit,
         quantity=qty,
         legs=legs,
+        # The strategy already computed the true per-contract worst case; hand it
+        # to risk_manager directly so gate 1 is correct for debit structures too.
+        max_loss=plan.max_loss_per_contract,
     )
 
 
+# Regime-aware alias — any structure the switch builds (condor, strangle,
+# vertical) is an IronCondorPlan and converts the same way.
+from_plan = from_iron_condor_plan
+
+
 def _build_mleg_request(order: ProposedOrder) -> LimitOrderRequest:
-    """Turn a 4-leg ``ProposedOrder`` into an Alpaca MLEG limit order request."""
-    if len(order.legs) != 4:
-        raise ValueError(f"iron condor needs 4 legs, got {len(order.legs)}")
+    """Turn a 2- or 4-leg ``ProposedOrder`` into an Alpaca MLEG limit order.
+
+    2 legs = a vertical spread or a long strangle; 4 legs = an iron condor.
+    """
+    if len(order.legs) not in (2, 4):
+        raise ValueError(f"expected a 2- or 4-leg order, got {len(order.legs)}")
     if order.quantity < 1:
         raise ValueError(f"order quantity must be >= 1, got {order.quantity}")
 

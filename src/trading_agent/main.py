@@ -35,6 +35,20 @@ Config (environment variables, never hardcoded):
   AGENT_REVIEW_TIMEOUT_SECONDS  risk_officer LLM timeout        (default 45)
   AGENT_PROFIT_TARGET_FRACTION  close at this fraction of credit (default 0.50)
   AGENT_STOP_LOSS_MULTIPLE      close at loss = N x credit       (default 2.0)
+  AGENT_ACTIVITY_LOG            off-hours-intelligence log file  (default logs/agent_activity.log)
+  AGENT_HEARTBEAT_MINUTES       cadence of the HEARTBEAT line    (default 60)
+  AGENT_GAP_ALERT_PCT           pre-market gap -> PRE-MARKET ALERT (default 0.5)
+
+Off-hours intelligence (``offhours.py``), around the trade loop, never blocking it:
+
+  * Heartbeat          — every AGENT_HEARTBEAT_MINUTES, market open or closed, a
+    ``[ts] HEARTBEAT: Status ... | Connectivity ... | Memory N IV readings`` line.
+  * Morning Brief       — 09:00-09:30 ET, once/day: the basket's pre-market gap vs
+    the prior close; a gap over AGENT_GAP_ALERT_PCT logs a PRE-MARKET ALERT.
+  * Nightly Post-Mortem — at the close, once/day: the pipeline funnel (scans ->
+    proposed -> approved, vetoes per gate), open unrealized P&L, dominant regime.
+
+  These also stream to ``AGENT_ACTIVITY_LOG`` for a standalone audit trail.
 """
 
 from __future__ import annotations
@@ -49,8 +63,9 @@ from datetime import date, datetime, time as dtime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from . import offhours
 from . import risk_officer
-from .data import get_market_snapshot
+from .data import IV_HISTORY_PATH, get_market_snapshot
 from .risk_manager import (
     DAILY_LOSS_HALT_PCT,
     MAX_CONCURRENT_POSITIONS,
@@ -61,10 +76,16 @@ from .risk_manager import (
     check_order,
     flag_expiring_positions,
 )
-from .strategy import build_iron_condor
+from .strategy import build_strategy_plan
 from . import executor as executor_mod
 
+# Structures whose entry cost is a net debit (max loss = premium paid), so
+# decide_exit() scores them on % of the debit rather than % of a credit.
+DEBIT_STRUCTURES = frozenset({"long_strangle"})
+DEFAULT_TICKERS = ("SPY", "QQQ", "IWM", "TLT")
+
 log = logging.getLogger("agent")
+offhours_log = logging.getLogger("agent.offhours")   # also -> agent_activity.log
 ET = ZoneInfo("America/New_York")
 MARKET_CLOSE_ET = dtime(16, 0)
 CONTRACT_MULTIPLIER = 100
@@ -97,9 +118,17 @@ class Config:
     review_timeout_s: float = 45.0
     profit_target_fraction: float = 0.50
     stop_loss_multiple: float = 2.0
+    debit_stop_fraction: float = 0.50           # close a debit trade down this much of the premium
+    tickers: tuple[str, ...] = DEFAULT_TICKERS  # basket evaluated each cycle
+    # off-hours intelligence (observability only — never touches the trade path)
+    activity_log_file: str = "logs/agent_activity.log"
+    heartbeat_minutes: int = 60                 # cadence of the hourly HEARTBEAT line
+    gap_alert_pct: float = 0.5                  # pre-market gap over this -> PRE-MARKET ALERT
 
     @classmethod
     def from_env(cls) -> "Config":
+        raw = os.environ.get("AGENT_TICKERS", "")
+        tickers = tuple(t.strip().upper() for t in raw.split(",") if t.strip()) or DEFAULT_TICKERS
         return cls(
             loop_interval_s=_env_int("AGENT_LOOP_INTERVAL_SECONDS", 900),
             log_level=os.environ.get("AGENT_LOG_LEVEL", "INFO").upper(),
@@ -109,14 +138,21 @@ class Config:
             review_timeout_s=_env_float("AGENT_REVIEW_TIMEOUT_SECONDS", 45.0),
             profit_target_fraction=_env_float("AGENT_PROFIT_TARGET_FRACTION", 0.50),
             stop_loss_multiple=_env_float("AGENT_STOP_LOSS_MULTIPLE", 2.0),
+            debit_stop_fraction=_env_float("AGENT_DEBIT_STOP_FRACTION", 0.50),
+            tickers=tickers,
+            activity_log_file=os.environ.get("AGENT_ACTIVITY_LOG", "logs/agent_activity.log"),
+            heartbeat_minutes=_env_int("AGENT_HEARTBEAT_MINUTES", 60),
+            gap_alert_pct=_env_float("AGENT_GAP_ALERT_PCT", 0.5),
         )
 
 
 _LOGGING_READY = False
 
 
-def setup_logging(level: str, log_file: str) -> None:
-    """Console + rotating-free file handler. Safe to call more than once."""
+def setup_logging(level: str, log_file: str, activity_log_file: str | None = None) -> None:
+    """Console + file handler for everything, plus an extra file handler that
+    captures just the off-hours-intelligence events (heartbeat / morning brief /
+    post-mortem) to ``activity_log_file``. Safe to call more than once."""
     global _LOGGING_READY
     root = logging.getLogger()
     root.setLevel(getattr(logging, level, logging.INFO))
@@ -136,6 +172,13 @@ def setup_logging(level: str, log_file: str) -> None:
     for handler in (file_h, con_h):
         handler.setFormatter(fmt)
         root.addHandler(handler)
+
+    if activity_log_file:
+        # agent.offhours records land here AND (via propagation) in the main log.
+        Path(activity_log_file).parent.mkdir(parents=True, exist_ok=True)
+        act_h = logging.FileHandler(activity_log_file, encoding="utf-8")
+        act_h.setFormatter(fmt)
+        offhours_log.addHandler(act_h)
     _LOGGING_READY = True
 
 
@@ -158,14 +201,17 @@ def load_env_file(path: str | None) -> None:
 # --------------------------------------------------------------------------- #
 @dataclass
 class TrackedCondor:
-    """An iron condor this agent opened and is now managing."""
+    """A position this agent opened and is now managing. Name kept for
+    compatibility; ``structure`` may be a condor, strangle or vertical spread."""
 
     id: str
     expiry: date
     quantity: int
-    entry_credit: float                       # $ per spread received at open
-    legs: tuple[OrderLeg, ...] = ()           # 4 legs, each with an OCC symbol
+    entry_credit: float                       # $ per spread; negative = net debit paid
+    legs: tuple[OrderLeg, ...] = ()           # 2 or 4 legs, each with an OCC symbol
     opened_at: str = ""
+    symbol: str = "SPY"                       # basket ticker
+    structure: str = "iron_condor"           # iron_condor | long_strangle | bull_put | bear_call
 
     def as_open_position(self) -> OpenPosition:
         # OpenPosition.symbol carries our tracking id so flag_expiring_positions
@@ -175,6 +221,8 @@ class TrackedCondor:
     def to_dict(self) -> dict:
         return {
             "id": self.id,
+            "symbol": self.symbol,
+            "structure": self.structure,
             "expiry": self.expiry.isoformat(),
             "quantity": self.quantity,
             "entry_credit": self.entry_credit,
@@ -190,6 +238,8 @@ class TrackedCondor:
     def from_dict(cls, d: dict) -> "TrackedCondor":
         return cls(
             id=d["id"],
+            symbol=d.get("symbol", "SPY"),
+            structure=d.get("structure", "iron_condor"),
             expiry=date.fromisoformat(d["expiry"]),
             quantity=int(d["quantity"]),
             entry_credit=float(d["entry_credit"]),
@@ -210,6 +260,11 @@ class Session:
     open_condors: list[TrackedCondor] = field(default_factory=list)
     history: list[dict] = field(default_factory=list)  # opened/closed events
     last_daily_summary_date: str = ""
+    # off-hours intelligence bookkeeping (one marker per timed behaviour)
+    last_heartbeat_at: str = ""                        # ISO ts of the last HEARTBEAT
+    last_morning_brief_date: str = ""                  # ET date of the last Morning Brief
+    last_post_mortem_date: str = ""                    # ET date of the last Post-Mortem
+    daily_activity: dict = field(default_factory=dict)  # "YYYY-MM-DD" -> DailyActivity dict
 
     # -- persistence ----------------------------------------------------- #
     def to_dict(self) -> dict:
@@ -221,6 +276,10 @@ class Session:
             "open_condors": [c.to_dict() for c in self.open_condors],
             "history": self.history,
             "last_daily_summary_date": self.last_daily_summary_date,
+            "last_heartbeat_at": self.last_heartbeat_at,
+            "last_morning_brief_date": self.last_morning_brief_date,
+            "last_post_mortem_date": self.last_post_mortem_date,
+            "daily_activity": self.daily_activity,
         }
 
     @classmethod
@@ -233,6 +292,10 @@ class Session:
             open_condors=[TrackedCondor.from_dict(c) for c in d.get("open_condors", [])],
             history=list(d.get("history", [])),
             last_daily_summary_date=d.get("last_daily_summary_date", ""),
+            last_heartbeat_at=d.get("last_heartbeat_at", ""),
+            last_morning_brief_date=d.get("last_morning_brief_date", ""),
+            last_post_mortem_date=d.get("last_post_mortem_date", ""),
+            daily_activity=dict(d.get("daily_activity", {})),
         )
 
     def events_on(self, iso_date: str, kind: str) -> list[dict]:
@@ -354,9 +417,17 @@ class CondorValuation:
 
     @property
     def captured_fraction(self) -> float:
-        """Fraction of the entry credit kept: 1.0 = full max profit, negative = losing."""
+        """Fraction of the entry credit kept: 1.0 = full max profit, negative =
+        losing. Credit structures only (entry_credit > 0)."""
         c = self.condor.entry_credit
         return self.pnl_per_spread / c if c else 0.0
+
+    @property
+    def gain_fraction(self) -> float:
+        """P&L as a fraction of the premium paid — for debit structures
+        (entry_credit < 0). +0.5 = up 50% on the debit; -0.5 = down 50%."""
+        debit = abs(self.condor.entry_credit)
+        return self.pnl_per_spread / debit if debit else 0.0
 
 
 def decide_exit(
@@ -365,13 +436,26 @@ def decide_exit(
     is_expiring: bool,
     profit_target_fraction: float = 0.50,
     stop_loss_multiple: float = 2.0,
+    debit_stop_fraction: float = 0.50,
 ) -> str | None:
-    """Should this condor be closed now? Checked in the spec's order:
-    profit target, then stop loss, then expiry. First match wins."""
-    if valuation.captured_fraction >= profit_target_fraction:
-        return "profit-target"
-    if valuation.pnl_per_spread <= -stop_loss_multiple * valuation.condor.entry_credit:
-        return "stop-loss"
+    """Should this position be closed now? Checked in the spec's order:
+    profit target, then stop loss, then expiry. First match wins.
+
+    Credit structures (iron condor, verticals): profit at ``profit_target_fraction``
+    of the credit captured; stop at a loss of ``stop_loss_multiple`` x the credit.
+    Debit structures (long strangle): profit at +``profit_target_fraction`` of the
+    premium; stop at -``debit_stop_fraction`` of the premium (you can never lose
+    more than the premium, so the credit "2x" stop does not apply)."""
+    if valuation.condor.structure in DEBIT_STRUCTURES:
+        if valuation.gain_fraction >= profit_target_fraction:
+            return "profit-target"
+        if valuation.gain_fraction <= -debit_stop_fraction:
+            return "stop-loss"
+    else:
+        if valuation.captured_fraction >= profit_target_fraction:
+            return "profit-target"
+        if valuation.pnl_per_spread <= -stop_loss_multiple * valuation.condor.entry_credit:
+            return "stop-loss"
     if is_expiring:
         return "expiry"
     return None
@@ -408,25 +492,30 @@ def manage_open_positions(
             is_expiring=val.condor.id in expiring_ids,
             profit_target_fraction=config.profit_target_fraction,
             stop_loss_multiple=config.stop_loss_multiple,
+            debit_stop_fraction=config.debit_stop_fraction,
         )
         if reason is None:
             continue
         try:
             close_fn(val.condor)
         except Exception as exc:  # noqa: BLE001 - never let one close crash the cycle
-            log.error("failed to close condor %s (%s): %s", val.condor.id, reason, exc)
+            log.error("failed to close %s %s (%s): %s",
+                      val.condor.symbol, val.condor.id, reason, exc)
             continue
 
         event = {
-            "kind": "closed", "at": now_iso, "id": val.condor.id, "reason": reason,
-            "pnl": round(val.total_pnl, 2), "quantity": val.condor.quantity,
+            "kind": "closed", "at": now_iso, "id": val.condor.id,
+            "symbol": val.condor.symbol, "structure": val.condor.structure,
+            "reason": reason, "pnl": round(val.total_pnl, 2),
+            "quantity": val.condor.quantity,
         }
         session.history.append(event)
         session.open_condors = [c for c in session.open_condors if c.id != val.condor.id]
         closed.append(event)
         log.info(
-            "CLOSED condor %s — %s — P&L $%s (%d spread(s))",
-            val.condor.id, reason, f"{val.total_pnl:,.2f}", val.condor.quantity,
+            "CLOSED %s %s [%s] — %s — P&L $%s (%d spread(s))",
+            val.condor.symbol, val.condor.id, val.condor.structure, reason,
+            f"{val.total_pnl:,.2f}", val.condor.quantity,
         )
     return closed
 
@@ -460,8 +549,12 @@ class DecisionSummary:
 def _describe_order(order, plan) -> str:
     syms = " ".join(f"{lg.action[0].upper()}{lg.right[0].upper()}:{lg.symbol}" for lg in order.legs)
     exp = getattr(plan, "expiry", None)
-    return (f"{order.quantity}x condor exp {exp.isoformat() if exp else '?'} "
-            f"credit ${order.net_credit:.2f} width ${order.wing_width:.2f} [{syms}]")
+    struct = getattr(plan, "structure", "iron_condor")
+    tkr = getattr(plan, "symbol", None) or "?"
+    prem = order.net_credit
+    prem_s = f"debit ${abs(prem):.2f}" if prem < 0 else f"credit ${prem:.2f}"
+    return (f"{order.quantity}x {tkr} {struct} exp {exp.isoformat() if exp else '?'} "
+            f"{prem_s} width ${order.wing_width:.2f} [{syms}]")
 
 
 def evaluate_new_trade(
@@ -483,8 +576,8 @@ def evaluate_new_trade(
     The ``*_fn`` hooks default to the real modules; tests inject spies. Any
     stage a spy is called is appended to ``call_log`` when provided.
     """
-    plan_fn = plan_fn or (lambda snap, today=None: build_iron_condor(snap, today=today))
-    to_order_fn = to_order_fn or executor_mod.from_iron_condor_plan
+    plan_fn = plan_fn or (lambda snap, today=None: build_strategy_plan(snap, today=today))
+    to_order_fn = to_order_fn or executor_mod.from_plan
     check_fn = check_fn or check_order
     review_fn = review_fn or risk_officer.review_trade
     submit_fn = submit_fn or executor_mod.submit_iron_condor
@@ -518,8 +611,15 @@ def evaluate_new_trade(
         )
 
     # ---- 3. risk_officer ----------------------------------------------- #
+    # Hand the regime choice to the reviewer alongside the snapshot.
+    review_snapshot = {
+        **snapshot,
+        "structure": getattr(plan, "structure", None),
+        "regime": getattr(plan, "regime", None),
+        "regime_reason": getattr(plan, "regime_reason", None),
+    }
     mark("risk_officer")
-    review = review_fn(order, snapshot, account, timeout=config.review_timeout_s)
+    review = review_fn(order, review_snapshot, account, timeout=config.review_timeout_s)
     if not getattr(review, "approved", False):
         return DecisionSummary(
             True, "risk_officer", "vetoed",
@@ -586,8 +686,11 @@ def daily_summary_text(
     since_pct = (since_start / session.starting_equity * 100.0) if session.starting_equity else 0.0
     realized_today = sum(e.get("pnl", 0.0) for e in closed)
 
+    basket = ", ".join(sorted({c.symbol for c in session.open_condors})) or "—"
+    regimes_today = [e.get("regime") for e in opened if e.get("regime")]
+
     lines = [
-        f"SPY Iron Condor Agent — Daily Performance Summary ({et_date:%b %d, %Y})",
+        f"Multi-Ticker Options Agent — Daily Performance Summary ({et_date:%b %d, %Y})",
         "",
         f"Equity: ${current_equity:,.0f}   (day P&L ${day_pnl:+,.0f} / {day_pct:+.2f}%)",
         f"Since start: ${since_start:+,.0f} / {since_pct:+.2f}% (from ${session.starting_equity:,.0f})",
@@ -596,16 +699,29 @@ def daily_summary_text(
         f"Trades today: {len(opened)} opened, {len(closed)} closed",
     ]
     for e in closed:
-        lines.append(f"  - closed {e['id']} [{e['reason']}] P&L ${e.get('pnl', 0.0):+,.0f}")
+        lines.append(
+            f"  - closed {e.get('symbol', '?')} {e['id']} "
+            f"[{e.get('structure', 'iron_condor')} / {e['reason']}] "
+            f"P&L ${e.get('pnl', 0.0):+,.0f}"
+        )
     for e in opened:
-        lines.append(f"  + opened {e['id']} [{e.get('detail', 'iron condor')}]")
+        lines.append(
+            f"  + opened {e.get('symbol', '?')} {e['id']} "
+            f"[{e.get('structure', 'iron_condor')}] {e.get('detail', '')}".rstrip()
+        )
+    for r in regimes_today:
+        lines.append(f"    regime: {r}")
 
-    lines += ["", f"Open positions: {len(session.open_condors)}"]
+    lines += ["", f"Open positions: {len(session.open_condors)}/3  (tickers: {basket})"]
     for c in session.open_condors:
-        lines.append(f"  * {c.id}  exp {c.expiry:%m/%d}  x{c.quantity}  (${c.entry_credit:.2f} cr)")
+        kind = "debit" if c.entry_credit < 0 else "credit"
+        lines.append(
+            f"  * {c.symbol} {c.id}  {c.structure}  exp {c.expiry:%m/%d}  "
+            f"x{c.quantity}  (${abs(c.entry_credit):.2f} {kind})"
+        )
     if session.trading_halted:
         lines += ["", "NOTE: competition drawdown floor breached — trading is halted."]
-    lines += ["", "#options #trading #SPY #ironcondor #algotrading"]
+    lines += ["", "#options #trading #SPY #QQQ #IWM #TLT #algotrading"]
     return "\n".join(lines)
 
 
@@ -644,24 +760,46 @@ class AlpacaConnection:
                 continue
             self.trading.close_position(leg.symbol)
 
-    def value_condors(self, condors: list[TrackedCondor], spot: float | None) -> list[CondorValuation]:
+    def value_condors(self, condors: list[TrackedCondor]) -> list[CondorValuation]:
+        """Re-price each open position from its own ticker's near-dated chain."""
         from .alpaca_trader import build_contracts, fetch_option_chain
 
         out: list[CondorValuation] = []
         for c in condors:
             try:
                 chain = fetch_option_chain(
-                    self.creds, expiry=c.expiry, spot=spot, strike_window_pct=0.20
+                    self.creds, expiry=c.expiry, underlying=c.symbol,
+                    spot=None, strike_window_pct=None,
                 )
                 mids = {ct.symbol: ct.mid for ct in build_contracts(chain)}
             except Exception as exc:  # noqa: BLE001
-                log.error("could not price condor %s: %s", c.id, exc)
+                log.error("could not price %s %s: %s", c.symbol, c.id, exc)
                 continue
             cost = value_condor(c.legs, mids)
             if cost is None:
-                log.warning("condor %s — missing a leg quote, skipping management", c.id)
+                log.warning("%s %s — missing a leg quote, skipping management",
+                            c.symbol, c.id)
                 continue
             out.append(CondorValuation(c, cost))
+        return out
+
+    def premarket_gaps(self, tickers) -> list[offhours.TickerGap]:
+        """Current reference price vs the prior daily close for each basket
+        ticker — feeds the Morning Brief. One bad ticker is skipped, not fatal."""
+        from .alpaca_trader import get_daily_closes
+        from .data import get_underlying_price
+
+        out: list[offhours.TickerGap] = []
+        for t in tickers:
+            try:
+                closes = get_daily_closes(self.creds, t, sessions=2)
+                price = float(get_underlying_price(self.creds, t))
+            except Exception as exc:  # noqa: BLE001
+                log.error("pre-market gap for %s failed: %s", t, exc)
+                continue
+            if not closes:
+                continue
+            out.append(offhours.TickerGap(t, float(closes[-1]), price))
         return out
 
 
@@ -670,9 +808,19 @@ class AlpacaConnection:
 # --------------------------------------------------------------------------- #
 @dataclass
 class CycleReport:
-    decision: DecisionSummary
+    decisions: list[DecisionSummary]      # one per basket ticker evaluated
     closed: list[dict]
-    opened: dict | None = None
+    opened: list[dict] = field(default_factory=list)
+
+    @property
+    def decision(self) -> DecisionSummary | None:
+        """The most consequential decision this cycle (executed > vetoed >
+        blocked > everything else), for callers that want a single line."""
+        if not self.decisions:
+            return None
+        rank = {"executed": 5, "error": 4, "vetoed": 3, "blocked": 2,
+                "halted": 1, "skipped": 0}
+        return max(self.decisions, key=lambda d: rank.get(d.outcome, -1))
 
 
 def run_cycle(conn: AlpacaConnection, session: Session, config: Config, *,
@@ -681,7 +829,6 @@ def run_cycle(conn: AlpacaConnection, session: Session, config: Config, *,
     today = now_et.date()
     now_iso = now_et.isoformat()
 
-    snapshot = get_market_snapshot()
     acct = conn.get_account()
     current_equity = float(acct.equity)
     day_start_equity = float(getattr(acct, "last_equity", None) or current_equity)
@@ -690,10 +837,10 @@ def run_cycle(conn: AlpacaConnection, session: Session, config: Config, *,
         session, current_equity=current_equity, day_start_equity=day_start_equity
     )
 
-    # 1. manage open positions FIRST
+    # 1. MANAGE OPEN POSITIONS FIRST — across the whole basket
     expiring = flag_expiring_positions(account.open_positions, today=today)
     expiring_ids = {ep.position.symbol for ep in expiring}
-    valuations = conn.value_condors(session.open_condors, snapshot.get("current_price"))
+    valuations = conn.value_condors(session.open_condors)
     closed = manage_open_positions(
         session, valuations, expiring_ids,
         close_fn=conn.close_condor, config=config, now_iso=now_iso,
@@ -705,28 +852,70 @@ def run_cycle(conn: AlpacaConnection, session: Session, config: Config, *,
         session, current_equity=current_equity, day_start_equity=day_start_equity
     )
 
-    # 3. + 4. prechecks and the pipeline
-    decision = evaluate_cycle_decision(snapshot, account, config=config, today=today)
+    # 3. + 4. evaluate EACH ticker independently; exposure stays global (the
+    #     3-position cap is enforced on the shared open_positions list, and we
+    #     rebuild `account` after every open so the next ticker sees it).
+    decisions: list[DecisionSummary] = []
+    opened: list[dict] = []
+    for symbol in config.tickers:
+        try:
+            snapshot = get_market_snapshot(symbol, creds=conn.creds)
+        except Exception as exc:  # noqa: BLE001 - one ticker's data must not kill the cycle
+            log.error("snapshot for %s failed: %s", symbol, exc)
+            decisions.append(DecisionSummary(False, "precheck", "error",
+                                             f"{symbol}: snapshot failed — {exc}"))
+            continue
 
-    opened_event = None
-    if decision.outcome == "executed":
-        opened_event = _record_opened(session, decision, now_iso)
+        decision = evaluate_cycle_decision(snapshot, account, config=config, today=today)
+        decisions.append(decision)
+        log.info("[%s] %s", symbol, decision.render())
 
+        if decision.outcome == "executed":
+            opened.append(_record_opened(session, decision, now_iso))
+            account = reconcile_account_state(
+                session, current_equity=current_equity, day_start_equity=day_start_equity
+            )
+
+    _accumulate_daily_activity(session, decisions, today=today, basket_size=len(config.tickers))
     save_session(session, config.session_file)
-    log.info("%s", decision.render())
-    return CycleReport(decision=decision, closed=closed, opened=opened_event)
+    return CycleReport(decisions=decisions, closed=closed, opened=opened)
+
+
+_ACTIVITY_RETAIN_DAYS = 10
+
+
+def _accumulate_daily_activity(session: Session, decisions: list[DecisionSummary],
+                               *, today: date, basket_size: int) -> None:
+    """Fold this cycle's decisions into the day's running funnel totals (used by
+    the Nightly Post-Mortem). Observability only — reads decisions, writes the
+    session's ``daily_activity`` map."""
+    iso = today.isoformat()
+    activity = offhours.DailyActivity.from_dict(
+        session.daily_activity.get(iso, {"date": iso})
+    )
+    activity.basket_size = basket_size
+    offhours.accumulate_activity(activity, decisions)
+    session.daily_activity[iso] = activity.to_dict()
+    # keep the map small — only the last few days matter
+    if len(session.daily_activity) > _ACTIVITY_RETAIN_DAYS:
+        for stale in sorted(session.daily_activity)[:-_ACTIVITY_RETAIN_DAYS]:
+            del session.daily_activity[stale]
 
 
 def _record_opened(session: Session, decision: DecisionSummary, now_iso: str) -> dict:
     plan = decision.plan
     result = decision.result
     qty = int(plan.suggested_contracts)
-    order_id = str(getattr(result, "order_id", None) or f"cond-{now_iso[:19]}")
+    symbol = getattr(plan, "symbol", None) or "SPY"
+    structure = getattr(plan, "structure", "iron_condor")
+    order_id = str(getattr(result, "order_id", None) or f"{symbol}-{now_iso[:19]}")
     legs = tuple(
         OrderLeg(cl.action, cl.right, qty, cl.contract.symbol) for cl in plan.legs
     )
     condor = TrackedCondor(
         id=order_id,
+        symbol=symbol,
+        structure=structure,
         expiry=plan.expiry,
         quantity=qty,
         entry_credit=float(plan.net_credit),
@@ -734,11 +923,100 @@ def _record_opened(session: Session, decision: DecisionSummary, now_iso: str) ->
         opened_at=now_iso,
     )
     session.open_condors.append(condor)
-    event = {"kind": "opened", "at": now_iso, "id": condor.id,
+    event = {"kind": "opened", "at": now_iso, "id": condor.id, "symbol": symbol,
+             "structure": structure, "regime": getattr(plan, "regime", None),
              "detail": decision.order_detail}
     session.history.append(event)
-    log.info("OPENED condor %s — %s", condor.id, decision.order_detail)
+    log.info("OPENED %s %s [%s] — %s", symbol, condor.id, structure, decision.order_detail)
     return event
+
+
+# --------------------------------------------------------------------------- #
+# Off-hours intelligence — timed, non-blocking, observability only
+# --------------------------------------------------------------------------- #
+def _maybe_heartbeat(
+    session: Session,
+    config: Config,
+    *,
+    now_et: datetime,
+    market_open: bool,
+    connectivity_ok: bool,
+    iv_path: str | None = None,
+) -> offhours.Heartbeat | None:
+    """Emit one HEARTBEAT line per ``config.heartbeat_minutes`` — market open or
+    closed — so the audit trail is continuous. Returns the heartbeat if it fired."""
+    if not offhours.interval_elapsed(
+        session.last_heartbeat_at, now_et,
+        min_gap_seconds=config.heartbeat_minutes * 60,
+    ):
+        return None
+    hb = offhours.build_heartbeat(
+        now_et,
+        market_open=market_open,
+        connectivity_ok=connectivity_ok,
+        iv_readings=offhours.count_iv_readings(iv_path or IV_HISTORY_PATH),
+    )
+    offhours_log.info("%s", hb.render())
+    session.last_heartbeat_at = now_et.isoformat()
+    save_session(session, config.session_file)
+    return hb
+
+
+def _maybe_morning_brief(
+    session: Session, conn: AlpacaConnection, config: Config, *, now_et: datetime
+) -> str | None:
+    """Between 09:00 and 09:30 ET, once per day: scan the basket's pre-market gap
+    vs the prior close and log the brief (+ a PRE-MARKET ALERT on a >gap move)."""
+    et_date = now_et.date()
+    if session.last_morning_brief_date == et_date.isoformat():
+        return None
+    if not offhours.in_morning_brief_window(now_et):
+        return None
+    try:
+        gaps = conn.premarket_gaps(config.tickers)
+    except Exception as exc:  # noqa: BLE001 - the brief must never crash the loop
+        log.error("morning brief: could not fetch pre-market gaps: %s", exc)
+        gaps = []
+    text = offhours.morning_brief_text(gaps, et_date=et_date, threshold=config.gap_alert_pct)
+    offhours_log.info("MORNING BRIEF\n%s\n%s\n%s", "=" * 60, text, "=" * 60)
+    session.last_morning_brief_date = et_date.isoformat()
+    save_session(session, config.session_file)
+    return text
+
+
+def _maybe_post_mortem(
+    session: Session, conn: AlpacaConnection, config: Config, *, now_et: datetime
+) -> str | None:
+    """At/after 16:00 ET, once per day: synthesise the day's pipeline funnel,
+    open-position unrealized P&L and dominant regime into a shareable digest."""
+    et_date = now_et.date()
+    iso = et_date.isoformat()
+    if session.last_post_mortem_date == iso:
+        return None
+    if now_et.time() < MARKET_CLOSE_ET:
+        return None
+
+    activity = offhours.DailyActivity.from_dict(
+        session.daily_activity.get(iso, {"date": iso, "basket_size": len(config.tickers)})
+    )
+    open_n = len(session.open_condors)
+    unrealized: float | None = 0.0
+    if open_n:
+        unrealized = None
+        try:
+            vals = conn.value_condors(session.open_condors)
+            if vals:
+                unrealized = round(sum(v.total_pnl for v in vals), 2)
+        except Exception as exc:  # noqa: BLE001
+            log.error("post-mortem: could not value open positions: %s", exc)
+
+    text = offhours.post_mortem_text(
+        activity, et_date=et_date, open_positions=open_n, unrealized_pnl=unrealized
+    )
+    offhours_log.info("NIGHTLY POST-MORTEM\n%s\n%s\n%s", "=" * 60, text, "=" * 60)
+    session.last_post_mortem_date = iso
+    save_session(session, config.session_file)
+    return text
 
 
 # --------------------------------------------------------------------------- #
@@ -770,7 +1048,7 @@ def _maybe_daily_summary(session: Session, conn: AlpacaConnection, clock, config
 
 
 def startup(config: Config) -> tuple[AlpacaConnection, Session]:
-    setup_logging(config.log_level, config.log_file)
+    setup_logging(config.log_level, config.log_file, config.activity_log_file)
     load_env_file(config.env_file)
 
     conn = AlpacaConnection()
@@ -786,9 +1064,10 @@ def startup(config: Config) -> tuple[AlpacaConnection, Session]:
 
     log.info(
         "STARTUP %s — account %s — starting_equity $%s — current equity $%s — "
-        "loop every %ds",
+        "basket %s — loop every %ds — heartbeat every %dm — activity log %s",
         datetime.now(ET).isoformat(), account_id, f"{session.starting_equity:,.2f}",
-        f"{live_equity:,.2f}", config.loop_interval_s,
+        f"{live_equity:,.2f}", ",".join(config.tickers), config.loop_interval_s,
+        config.heartbeat_minutes, config.activity_log_file,
     )
     return conn, session
 
@@ -799,15 +1078,34 @@ def run_forever(config: Config | None = None) -> None:
     prev_is_open = False
 
     while True:
+        now_et = datetime.now(ET)
+        clock = None
+        connectivity_ok = True
         try:
             clock = conn.get_clock()
-            if clock.is_open:
-                run_cycle(conn, session, config,
-                          now_et=clock.timestamp.astimezone(ET))
-            else:
+        except KeyboardInterrupt:
+            log.info("interrupted — shutting down")
+            return
+        except Exception as exc:  # noqa: BLE001 - still emit a heartbeat so the trail is unbroken
+            connectivity_ok = False
+            log.exception("get_clock failed — emitting an Error heartbeat: %s", exc)
+
+        try:
+            market_open = bool(clock and clock.is_open)
+            if market_open:
+                run_cycle(conn, session, config, now_et=clock.timestamp.astimezone(ET))
+            elif clock is not None:
                 log.info("market closed — next open %s", getattr(clock, "next_open", "?"))
-            _maybe_daily_summary(session, conn, clock, config, prev_is_open=prev_is_open)
-            prev_is_open = clock.is_open
+
+            # Off-hours intelligence — runs every loop, gated internally by time.
+            # Cheap no-ops until each behaviour is actually due; never blocks a cycle.
+            _maybe_heartbeat(session, config, now_et=now_et,
+                             market_open=market_open, connectivity_ok=connectivity_ok)
+            if clock is not None:
+                _maybe_morning_brief(session, conn, config, now_et=now_et)
+                _maybe_daily_summary(session, conn, clock, config, prev_is_open=prev_is_open)
+                _maybe_post_mortem(session, conn, config, now_et=now_et)
+                prev_is_open = clock.is_open
         except KeyboardInterrupt:
             log.info("interrupted — shutting down")
             return

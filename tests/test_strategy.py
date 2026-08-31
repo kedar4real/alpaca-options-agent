@@ -196,3 +196,211 @@ def test_plan_position_sizing_respects_risk_cap() -> None:
     assert n * plan.max_loss_per_contract <= s.MAX_RISK_PER_TRADE
     assert (n + 1) * plan.max_loss_per_contract > s.MAX_RISK_PER_TRADE
     assert s.MAX_RISK_PER_TRADE == 1_500.0
+
+
+# =========================================================================== #
+# Range-bound filter — Kaufman efficiency ratio
+# =========================================================================== #
+UP = [100 + i for i in range(11)]                       # straight line up
+DOWN = [110 - i for i in range(11)]                     # straight line down
+CHOP = [100, 103, 100, 103, 100, 103, 100, 103, 100, 103, 100]   # net 0, ER 0
+WOBBLE = [100, 101, 100, 101, 100, 101, 100, 101, 100, 101, 101]  # net +1, ER ~0.09
+
+
+def test_efficiency_ratio_straight_line_is_one() -> None:
+    assert s.efficiency_ratio(UP) == 1.0
+    assert s.efficiency_ratio(DOWN) == 1.0
+
+
+def test_efficiency_ratio_choppy_is_near_zero() -> None:
+    assert s.efficiency_ratio(CHOP) == 0.0
+
+
+def test_efficiency_ratio_none_without_enough_history() -> None:
+    assert s.efficiency_ratio([100, 101, 102]) is None
+    assert s.efficiency_ratio(None) is None
+
+
+def test_efficiency_ratio_flat_series_is_zero() -> None:
+    assert s.efficiency_ratio([50.0] * 11) == 0.0
+
+
+def test_is_range_bound_matches_the_threshold_rule() -> None:
+    assert s.is_range_bound(CHOP, threshold=0.3) is True        # ER 0.0 < 0.3
+    assert s.is_range_bound(UP, threshold=0.3) is False         # ER 1.0 >= 0.3
+    assert s.is_range_bound(WOBBLE, threshold=0.3) is True      # tiny net move, low ER
+    assert s.is_range_bound([1, 2, 3]) is None                  # not enough data
+
+
+def test_trend_direction() -> None:
+    assert s.trend_direction(UP) == "up"
+    assert s.trend_direction(DOWN) == "down"
+    assert s.trend_direction([50.0] * 11) == "flat"
+    assert s.trend_direction([1, 2]) is None
+
+
+# =========================================================================== #
+# Dynamic market-regime switch
+# =========================================================================== #
+def _snap(*, atm_iv, spread, iv_eligible, closes):
+    return {
+        "symbol": "SPY",
+        "atm_iv": atm_iv,
+        "iv_rv_spread": spread,
+        "iv_regime": IVRegime(atm_iv, None, "hackathon_static", iv_eligible, "test"),
+        "daily_closes": closes,
+        "current_price": 100.0,
+        "chain": {},
+    }
+
+
+def test_regime_a_high_vol_picks_iron_condor() -> None:
+    d = s.select_regime(_snap(atm_iv=0.22, spread=0.05, iv_eligible=True, closes=CHOP))
+    assert d.regime == s.REGIME_IRON_CONDOR
+    assert "Regime A" in d.label
+
+
+def test_regime_b_low_vol_range_bound_picks_long_strangle() -> None:
+    d = s.select_regime(_snap(atm_iv=0.10, spread=-0.06, iv_eligible=False, closes=CHOP))
+    assert d.regime == s.REGIME_LONG_STRANGLE
+    assert "Regime B" in d.label and "range-bound" in d.reason
+
+
+def test_regime_c_low_vol_trending_up_picks_bull_put() -> None:
+    d = s.select_regime(_snap(atm_iv=0.10, spread=-0.06, iv_eligible=False, closes=UP))
+    assert d.regime == s.REGIME_BULL_PUT
+    assert d.direction == "up" and "Regime C" in d.label
+
+
+def test_regime_c_low_vol_trending_down_picks_bear_call() -> None:
+    d = s.select_regime(_snap(atm_iv=0.10, spread=-0.06, iv_eligible=False, closes=DOWN))
+    assert d.regime == s.REGIME_BEAR_CALL
+    assert d.direction == "down"
+
+
+def test_regime_none_when_vol_is_neutral() -> None:
+    d = s.select_regime(_snap(atm_iv=0.14, spread=0.00, iv_eligible=False, closes=UP))
+    assert d.regime == s.REGIME_NONE
+
+
+def test_regime_none_when_iv_cheap_but_no_price_history() -> None:
+    d = s.select_regime(_snap(atm_iv=0.10, spread=-0.06, iv_eligible=False, closes=[1, 2, 3]))
+    assert d.regime == s.REGIME_NONE
+
+
+def test_regime_a_needs_iv_elevated_not_just_rich_spread() -> None:
+    # spread rich but IV gate not eligible -> not Regime A; spread positive -> not B/C
+    d = s.select_regime(_snap(atm_iv=0.10, spread=0.03, iv_eligible=False, closes=CHOP))
+    assert d.regime == s.REGIME_NONE
+
+
+# =========================================================================== #
+# Long strangle (Regime B) — net debit, sized within the 1.5% cap
+# =========================================================================== #
+def test_plan_long_strangle_builds_two_long_legs() -> None:
+    plan = s.plan_long_strangle(
+        sample_chain(), underlying_price=770.0, iv_regime=BLOCKED, today=TODAY
+    )
+    assert plan.eligible is True
+    assert plan.structure == "long_strangle"
+    assert [(lg.action, lg.right) for lg in plan.legs] == [("buy", "put"), ("buy", "call")]
+    # ~0.30-delta strikes are nearest 0.25 in the sample chain (765P / 775C)
+    debit = plan.legs[0].contract.mid + plan.legs[1].contract.mid
+    assert plan.net_credit == pytest.approx(-debit)          # negative = debit paid
+    assert plan.max_loss_per_contract == pytest.approx(debit * 100)
+    assert plan.suggested_contracts >= 1
+    assert plan.suggested_contracts * plan.max_loss_per_contract <= s.MAX_RISK_PER_TRADE
+
+
+def test_plan_long_strangle_blocks_when_debit_exceeds_cap() -> None:
+    pricey = [
+        mk("put", 760, 0.25, 9.0, 9.2),
+        mk("call", 780, 0.25, 9.0, 9.2),
+    ]
+    plan = s.plan_long_strangle(pricey, underlying_price=770.0, iv_regime=BLOCKED, today=TODAY)
+    assert plan.eligible is False
+    assert "risk cap" in plan.reason and plan.suggested_contracts == 0
+
+
+# =========================================================================== #
+# Vertical credit spreads (Regime C)
+# =========================================================================== #
+def _rich_put_ladder():
+    # short 760 fat, long 755 ~0.10 -> credit 2.70 / width 5 = 54% (clears 25%)
+    return [
+        mk("put", 765, 0.30, 4.20, 4.40),
+        mk("put", 760, 0.225, 3.30, 3.50),
+        mk("put", 755, 0.10, 0.60, 0.80),
+        mk("put", 750, 0.06, 0.30, 0.40),
+    ]
+
+
+def _rich_call_ladder():
+    return [
+        mk("call", 775, 0.30, 4.20, 4.40),
+        mk("call", 780, 0.225, 3.30, 3.50),
+        mk("call", 785, 0.10, 0.60, 0.80),
+        mk("call", 790, 0.06, 0.30, 0.40),
+    ]
+
+
+def test_plan_bull_put_is_a_put_credit_spread() -> None:
+    plan = s.plan_bull_put(
+        _rich_put_ladder(), underlying_price=770.0, iv_regime=BLOCKED, today=TODAY
+    )
+    assert plan.eligible is True and plan.structure == "bull_put"
+    assert [(lg.action, lg.right) for lg in plan.legs] == [("sell", "put"), ("buy", "put")]
+    assert plan.net_credit > 0                              # credit received
+    # matched legs -> defined risk with the unchanged (width - credit) formula
+    assert plan.max_loss_per_contract == pytest.approx(
+        (plan.wing_width - plan.net_credit) * 100
+    )
+    assert plan.suggested_contracts >= 1
+
+
+def test_plan_bear_call_is_a_call_credit_spread() -> None:
+    plan = s.plan_bear_call(
+        _rich_call_ladder(), underlying_price=770.0, iv_regime=BLOCKED, today=TODAY
+    )
+    assert plan.eligible is True and plan.structure == "bear_call"
+    assert [(lg.action, lg.right) for lg in plan.legs] == [("sell", "call"), ("buy", "call")]
+
+
+def test_credit_spread_still_respects_the_credit_to_width_gate() -> None:
+    # thin credit relative to a wide wing -> blocked, same 25% rule as the condor
+    plan = s.plan_bull_put(
+        sample_chain(), underlying_price=770.0, iv_regime=BLOCKED, today=TODAY
+    )
+    assert plan.eligible is False
+    assert "below 25% target" in plan.reason
+
+
+# =========================================================================== #
+# build_strategy_plan — regime dispatch + explicit logging
+# =========================================================================== #
+def test_build_strategy_plan_dispatches_and_logs_regime(caplog) -> None:
+    snap = _snap(atm_iv=0.10, spread=-0.06, iv_eligible=False, closes=CHOP)
+    snap["chain"] = {c.symbol: None for c in sample_chain()}  # not used; we patch build_contracts
+
+    import trading_agent.strategy as strat
+    orig = strat.build_contracts
+    strat.build_contracts = lambda _chain: sample_chain()
+    try:
+        with caplog.at_level("INFO", logger="strategy"):
+            plan = s.build_strategy_plan(snap, today=TODAY)
+    finally:
+        strat.build_contracts = orig
+
+    assert plan.structure == "long_strangle"
+    assert plan.regime and "Regime B" in plan.regime
+    assert "REGIME [SPY]" in caplog.text
+    assert "Long Strangle" in caplog.text
+    assert "STRATEGY [SPY]" in caplog.text
+
+
+def test_build_strategy_plan_no_regime_returns_ineligible(caplog) -> None:
+    snap = _snap(atm_iv=0.14, spread=0.0, iv_eligible=False, closes=UP)
+    with caplog.at_level("INFO", logger="strategy"):
+        plan = s.build_strategy_plan(snap, today=TODAY)
+    assert plan.eligible is False and plan.structure == s.REGIME_NONE
+    assert "no tradeable regime" in plan.reason

@@ -153,6 +153,14 @@ def test_three_open_positions_blocks_the_fourth() -> None:
         (condor_legs(1), True),                                              # iron condor
         ((OrderLeg("buy", "put", 1), OrderLeg("sell", "put", 1)), True),     # vertical
         ((OrderLeg("buy", "put", 2), OrderLeg("sell", "put", 2)), True),     # matched, qty 2
+        ((OrderLeg("buy", "put", 3), OrderLeg("buy", "call", 3)), True),     # long strangle (all-long)
+        ((OrderLeg("buy", "call", 1),), True),                              # single long call
+        ((OrderLeg("buy", "put", 3), OrderLeg("buy", "call", 0)), False),    # all-long but zero qty
+        (
+            (OrderLeg("buy", "put", 3), OrderLeg("buy", "call", 3),
+             OrderLeg("sell", "call", 1)),
+            False,                                                          # one short leg -> matched rule, uncovered
+        ),
         ((OrderLeg("sell", "put", 1),), False),                             # naked short
         (
             (OrderLeg("sell", "put", 1), OrderLeg("sell", "call", 1), OrderLeg("buy", "call", 1)),
@@ -246,3 +254,43 @@ def test_every_gate_can_fail_at_once() -> None:
     assert d.checks["max_concurrent_positions"] is False
     assert d.checks["defined_risk"] is True
     assert len(d.blocks) == 4
+
+
+# --------------------------------------------------------------------------- #
+# ProposedOrder.max_loss — debit structures (additive; limits unchanged)
+# --------------------------------------------------------------------------- #
+def test_max_loss_overrides_the_credit_formula_for_debit_structures() -> None:
+    # a long strangle: net debit 2.10/spread, 3 contracts -> risk = 210 * 3
+    strangle = rm.ProposedOrder(
+        wing_width=0.0, net_credit=-2.10, quantity=3,
+        legs=(OrderLeg("buy", "put", 3), OrderLeg("buy", "call", 3)),
+        max_loss=210.0,
+    )
+    assert strangle.risk_dollars == pytest.approx(630.0)
+
+
+def test_max_loss_none_keeps_the_classic_formula() -> None:
+    credit = rm.ProposedOrder(wing_width=5.0, net_credit=2.0, quantity=2)
+    assert credit.risk_dollars == pytest.approx((5.0 - 2.0) * 100 * 2)
+
+
+def test_gate_1_uses_max_loss_for_a_long_strangle() -> None:
+    ok = rm.ProposedOrder(
+        0.0, -2.10, 3,
+        (OrderLeg("buy", "put", 3), OrderLeg("buy", "call", 3)),
+        max_loss=210.0,
+    )                                             # risk 630 vs 1.5% of 100k = 1500
+    d = rm.check_order(ok, account(100_000))
+    assert d.approved is True
+    assert d.checks["defined_risk"] is True
+    assert d.checks["max_risk_per_trade"] is True
+    assert d.order_risk == pytest.approx(630.0)
+
+    too_big = rm.ProposedOrder(
+        0.0, -6.00, 3,
+        (OrderLeg("buy", "put", 3), OrderLeg("buy", "call", 3)),
+        max_loss=600.0,
+    )                                             # risk 1800 > 1500 cap
+    d2 = rm.check_order(too_big, account(100_000))
+    assert d2.approved is False
+    assert d2.checks["max_risk_per_trade"] is False

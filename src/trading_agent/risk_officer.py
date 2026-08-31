@@ -113,6 +113,11 @@ def build_prompt(order: ProposedOrder, snapshot: dict, account: AccountState) ->
     mode = getattr(regime, "mode", "unknown")
     regime_reason = getattr(regime, "reason", "n/a")
 
+    ticker = snapshot.get("symbol") or snapshot.get("underlying") or "SPY"
+    structure = snapshot.get("structure") or "iron condor"
+    regime_label = snapshot.get("regime") or "n/a"
+    regime_detail = snapshot.get("regime_reason") or "n/a"
+
     risk = order.risk_dollars
     equity = account.current_equity
     risk_pct = (risk / equity * 100.0) if equity else float("nan")
@@ -125,33 +130,40 @@ def build_prompt(order: ProposedOrder, snapshot: dict, account: AccountState) ->
         for leg in order.legs
     )
 
-    return f"""You are the risk officer for an automated SPY options trading agent.
-A proposed iron condor has ALREADY passed the agent's hard risk limits. Your job
-is the final judgment call: APPROVE only if the trade looks sound given the
-volatility backdrop and current exposure; otherwise VETO.
+    return f"""You are the risk officer for an automated multi-ticker options trading agent.
+A proposed trade has ALREADY passed the agent's hard risk limits (incl. the 1.5%
+per-trade cap). Your job is the final judgment call: APPROVE only if the trade
+looks sound given the regime, the volatility backdrop and current exposure;
+otherwise VETO.
 
-PROPOSED TRADE (defined-risk iron condor)
+STRATEGY REGIME
+    ticker          {ticker}
+    structure       {structure}
+    regime          {regime_label}
+    regime detail   {regime_detail}
+
+PROPOSED TRADE ({structure}, defined-risk)
 {legs}
     wing width      ${order.wing_width:.2f}
-    net credit      ${order.net_credit:.2f}
+    net credit      ${order.net_credit:.2f}   (negative = net debit paid)
     contracts       {order.quantity}
     max loss        ${risk:,.0f}  ({risk_pct:.2f}% of equity)
 
-VOLATILITY BACKDROP
-    SPY price       {snapshot.get("current_price")}
+VOLATILITY BACKDROP ({ticker})
+    price           {snapshot.get("current_price")}
     ATM IV          {snapshot.get("atm_iv")}
     realized vol    {snapshot.get("realized_vol")}   (10-day, annualized)
-    IV - RV spread  {snapshot.get("iv_rv_spread")}   (positive = options price more move than realized)
+    IV - RV spread  {snapshot.get("iv_rv_spread")}   (positive = IV richer than realized movement)
     IV regime       {mode} -> {regime_reason}
 
-CURRENT EXPOSURE
+CURRENT EXPOSURE (whole basket)
     equity          ${equity:,.0f}
     open positions  {n_positions}
     day P&L         ${day_pnl:,.0f}
     total drawdown  ${drawdown:,.0f} from ${account.starting_equity:,.0f} start
 
-Reason about (a) whether the IV regime and IV-RV spread justify selling premium
-here, and (b) whether adding this exposure is prudent right now. Then answer
+Reason about (a) whether this structure fits the stated regime and the IV-RV
+spread, and (b) whether adding this exposure is prudent right now. Then answer
 EXACTLY in this format, nothing else:
 
 VERDICT: APPROVE

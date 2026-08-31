@@ -12,7 +12,7 @@ the halt prechecks. No network anywhere.
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import date, datetime
 from types import SimpleNamespace
 
 import pytest
@@ -411,12 +411,14 @@ def test_reconcile_uses_session_starting_equity_not_live_equity() -> None:
 # Daily performance summary
 # ======================================================================= #
 def test_daily_summary_is_copy_paste_ready() -> None:
-    sess = Session(starting_equity=100_000.0, open_condors=[tracked("open1", credit=1.10)])
+    sess = Session(starting_equity=100_000.0,
+                   open_condors=[tracked("open1", credit=1.10)])  # symbol defaults to SPY
     sess.history = [
         {"kind": "opened", "at": "2026-08-31T10:05:00-04:00", "id": "open1",
-         "detail": "3x condor exp 2026-09-04"},
+         "symbol": "QQQ", "structure": "long_strangle", "regime": "Regime B: Low IV",
+         "detail": "2x QQQ long_strangle debit $2.10"},
         {"kind": "closed", "at": "2026-08-31T14:00:00-04:00", "id": "old7",
-         "reason": "profit-target", "pnl": 180.0},
+         "symbol": "IWM", "structure": "bull_put", "reason": "profit-target", "pnl": 180.0},
     ]
     text = agent.daily_summary_text(
         sess, current_equity=99_600.0, day_start_equity=100_000.0, et_date=date(2026, 8, 31),
@@ -424,9 +426,11 @@ def test_daily_summary_is_copy_paste_ready() -> None:
     assert "Daily Performance Summary" in text
     assert "day P&L $-400" in text
     assert "1 opened, 1 closed" in text
-    assert "old7" in text and "profit-target" in text
-    assert "Open positions: 1" in text
-    assert "#ironcondor" in text
+    assert "IWM old7" in text and "bull_put / profit-target" in text
+    assert "QQQ open1" in text and "long_strangle" in text
+    assert "regime: Regime B: Low IV" in text
+    assert "Open positions: 1/3" in text
+    assert "#QQQ" in text and "#TLT" in text
 
 
 def test_daily_summary_notes_the_sticky_halt() -> None:
@@ -447,3 +451,281 @@ def test_decision_summary_render_has_stage_and_reason() -> None:
     assert "Vetoed at [risk_officer]" in out
     assert "thin edge" in out
     assert "order: 3x condor" in out
+
+
+# ======================================================================= #
+# decide_exit — debit structures (long strangle)
+# ======================================================================= #
+def _debit_val(cost_to_close, *, debit=2.00, qty=3):
+    c = TrackedCondor(id="ls", expiry=date(2099, 1, 1), quantity=qty,
+                      entry_credit=-debit, legs=CONDOR_LEGS[:2],
+                      structure="long_strangle")
+    return CondorValuation(c, cost_to_close)
+
+
+def test_strangle_profit_target_at_plus_50pct_of_the_debit() -> None:
+    # paid 2.00 ; worth 3.00 now -> +50% -> close for profit.
+    # all-long: value_condor gives cost_to_close = -(worth) = -3.00
+    assert decide_exit(_debit_val(-3.00), is_expiring=False) == "profit-target"
+
+
+def test_strangle_not_closed_when_only_up_40pct() -> None:
+    assert decide_exit(_debit_val(-2.80), is_expiring=False) is None
+
+
+def test_strangle_stop_loss_at_minus_50pct_of_the_debit() -> None:
+    # worth 1.00 now -> down 50% of the 2.00 premium
+    assert decide_exit(_debit_val(-1.00), is_expiring=False) == "stop-loss"
+
+
+def test_strangle_expiry_still_forces_a_close() -> None:
+    assert decide_exit(_debit_val(-2.00), is_expiring=True) == "expiry"
+
+
+def test_credit_structure_logic_is_unchanged() -> None:
+    # a plain iron condor still scores on captured fraction of the credit
+    c = TrackedCondor(id="ic", expiry=date(2099, 1, 1), quantity=3,
+                      entry_credit=1.00, legs=CONDOR_LEGS, structure="iron_condor")
+    assert decide_exit(CondorValuation(c, 0.50), is_expiring=False) == "profit-target"
+    assert decide_exit(CondorValuation(c, 3.00), is_expiring=False) == "stop-loss"
+
+
+# ======================================================================= #
+# Multi-ticker run_cycle — independent evaluation, GLOBAL 3-position cap
+# ======================================================================= #
+class _FakeAcct:
+    equity = 100_000.0
+    last_equity = 100_000.0
+    account_number = "PA_TEST"
+
+
+class _FakeConn:
+    creds = SimpleNamespace(api_key="k", secret_key="s", paper=True)
+
+    def get_account(self):
+        return _FakeAcct()
+
+    def value_condors(self, condors):
+        return []
+
+    def close_condor(self, condor):
+        pass
+
+
+def _fake_executed_summary(symbol):
+    plan = SimpleNamespace(
+        suggested_contracts=1, expiry=date(2026, 9, 4), net_credit=1.2,
+        symbol=symbol, structure="iron_condor", regime="Regime A",
+        legs=[SimpleNamespace(action="sell", right="put",
+                              contract=SimpleNamespace(symbol=f"{symbol}_P")),
+              SimpleNamespace(action="buy", right="put",
+                              contract=SimpleNamespace(symbol=f"{symbol}_Q"))],
+    )
+    result = SimpleNamespace(order_id=f"{symbol}-ord", submitted=True, error=None)
+    return DecisionSummary(True, "executor", "executed", f"opened {symbol}",
+                           order_detail=f"1x {symbol} iron_condor", plan=plan, result=result)
+
+
+def test_run_cycle_evaluates_every_ticker_and_caps_positions_globally(tmp_path, monkeypatch) -> None:
+    cfg = Config(session_file=str(tmp_path / "s.json"),
+                 tickers=("SPY", "QQQ", "IWM", "TLT"))
+    session = Session(starting_equity=100_000.0)
+
+    monkeypatch.setattr(agent, "get_market_snapshot",
+                        lambda symbol, creds=None: {"symbol": symbol})
+
+    # every ticker "would" execute; the global cap must stop it at 3
+    def fake_eval(snapshot, account, *, config, today=None, **kw):
+        n = len(account.open_positions)
+        if n >= 3:
+            return DecisionSummary(False, "precheck", "skipped",
+                                   f"max positions reached ({n}/3)")
+        return _fake_executed_summary(snapshot["symbol"])
+
+    monkeypatch.setattr(agent, "evaluate_cycle_decision", fake_eval)
+
+    report = agent.run_cycle(_FakeConn(), session, cfg, now_et=None)
+
+    assert [d.outcome for d in report.decisions] == \
+        ["executed", "executed", "executed", "skipped"]
+    assert len(session.open_condors) == 3                      # global cap held
+    assert {c.symbol for c in session.open_condors} == {"SPY", "QQQ", "IWM"}
+    assert len(report.opened) == 3
+    assert report.decision.outcome == "executed"               # most-consequential
+
+
+def test_run_cycle_one_bad_ticker_does_not_stop_the_others(tmp_path, monkeypatch) -> None:
+    cfg = Config(session_file=str(tmp_path / "s.json"), tickers=("SPY", "QQQ"))
+    session = Session(starting_equity=100_000.0)
+
+    def boom_snapshot(symbol, creds=None):
+        if symbol == "SPY":
+            raise RuntimeError("alpaca 500 for SPY")
+        return {"symbol": symbol}
+
+    monkeypatch.setattr(agent, "get_market_snapshot", boom_snapshot)
+    monkeypatch.setattr(agent, "evaluate_cycle_decision",
+                        lambda snapshot, account, **kw: DecisionSummary(
+                            True, "strategy", "skipped", f"{snapshot['symbol']} no regime"))
+
+    report = agent.run_cycle(_FakeConn(), session, cfg, now_et=None)
+    assert [d.stage for d in report.decisions] == ["precheck", "strategy"]
+    assert report.decisions[0].outcome == "error" and "SPY" in report.decisions[0].reason
+
+
+# ======================================================================= #
+# TrackedCondor — symbol + structure persist
+# ======================================================================= #
+def test_tracked_condor_round_trips_symbol_and_structure(tmp_path) -> None:
+    c = TrackedCondor(id="x", symbol="TLT", structure="long_strangle",
+                      expiry=date(2026, 9, 4), quantity=2, entry_credit=-2.1,
+                      legs=CONDOR_LEGS[:2])
+    session = Session(starting_equity=100_000.0, open_condors=[c])
+    path = str(tmp_path / "s.json")
+    agent.save_session(session, path)
+    back = agent.load_session(path).open_condors[0]
+    assert back.symbol == "TLT" and back.structure == "long_strangle"
+    assert back.entry_credit == -2.1
+
+
+def test_describe_order_labels_a_debit_structure() -> None:
+    order = SimpleNamespace(
+        quantity=2, net_credit=-2.10, wing_width=0.0,
+        legs=[SimpleNamespace(action="buy", right="put", symbol="QQQ_P"),
+              SimpleNamespace(action="buy", right="call", symbol="QQQ_C")],
+    )
+    plan = SimpleNamespace(expiry=date(2026, 9, 4), structure="long_strangle", symbol="QQQ")
+    out = agent._describe_order(order, plan)
+    assert "QQQ long_strangle" in out and "debit $2.10" in out
+
+
+# ======================================================================= #
+# Off-hours intelligence — scheduling / wiring (pure logic in test_offhours)
+# ======================================================================= #
+def test_run_cycle_accumulates_the_daily_activity_funnel(tmp_path, monkeypatch) -> None:
+    cfg = Config(session_file=str(tmp_path / "s.json"), tickers=("SPY", "QQQ"))
+    session = Session(starting_equity=100_000.0)
+    monkeypatch.setattr(agent, "get_market_snapshot",
+                        lambda symbol, creds=None: {"symbol": symbol})
+    monkeypatch.setattr(agent, "evaluate_cycle_decision",
+                        lambda snapshot, account, **kw: _fake_executed_summary(snapshot["symbol"]))
+
+    agent.run_cycle(_FakeConn(), session, cfg, now_et=datetime(2026, 9, 1, 12, 0, tzinfo=agent.ET))
+
+    (iso, act), = session.daily_activity.items()
+    assert iso == "2026-09-01"
+    assert act["ticker_scans"] == 2
+    assert act["approved"] == 2
+    assert act["basket_size"] == 2
+    assert act["regimes"]["Regime A"] == 2
+
+    # a second cycle the same day keeps accumulating into the same bucket
+    agent.run_cycle(_FakeConn(), session, cfg, now_et=datetime(2026, 9, 1, 12, 15, tzinfo=agent.ET))
+    assert session.daily_activity["2026-09-01"]["ticker_scans"] == 4
+
+
+def test_session_round_trips_offhours_markers(tmp_path) -> None:
+    sess = Session(starting_equity=100_000.0)
+    sess.last_heartbeat_at = "2026-09-01T10:00:00-04:00"
+    sess.last_morning_brief_date = "2026-09-01"
+    sess.last_post_mortem_date = "2026-08-31"
+    sess.daily_activity = {"2026-09-01": {"date": "2026-09-01", "ticker_scans": 5}}
+    path = str(tmp_path / "s.json")
+    agent.save_session(sess, path)
+    back = agent.load_session(path)
+    assert back.last_heartbeat_at == "2026-09-01T10:00:00-04:00"
+    assert back.last_morning_brief_date == "2026-09-01"
+    assert back.last_post_mortem_date == "2026-08-31"
+    assert back.daily_activity["2026-09-01"]["ticker_scans"] == 5
+
+
+def test_from_dict_defaults_offhours_fields_for_a_legacy_session() -> None:
+    back = Session.from_dict({"starting_equity": 100_000.0})   # pre-offhours session.json
+    assert back.last_heartbeat_at == ""
+    assert back.daily_activity == {}
+
+
+def test_maybe_heartbeat_fires_once_per_interval(tmp_path, monkeypatch) -> None:
+    cfg = Config(session_file=str(tmp_path / "s.json"), heartbeat_minutes=60)
+    sess = Session(starting_equity=100_000.0)
+    iv = tmp_path / "iv.csv"
+    iv.write_text("timestamp,symbol,iv,rv,spread\n2026-09-01T01:00,SPY,0.1,0.1,0.0\n")
+    monkeypatch.setattr(agent, "IV_HISTORY_PATH", str(iv))
+
+    t0 = datetime(2026, 9, 1, 10, 0, tzinfo=agent.ET)
+    hb = agent._maybe_heartbeat(sess, cfg, now_et=t0, market_open=False, connectivity_ok=True)
+    assert hb is not None and hb.iv_readings == 1 and hb.status == "Idle"
+    assert sess.last_heartbeat_at == t0.isoformat()
+
+    # 20 min later -> not due
+    assert agent._maybe_heartbeat(
+        sess, cfg, now_et=datetime(2026, 9, 1, 10, 20, tzinfo=agent.ET),
+        market_open=False, connectivity_ok=True) is None
+
+    # just over an hour later -> due again, and now market is open
+    hb2 = agent._maybe_heartbeat(
+        sess, cfg, now_et=datetime(2026, 9, 1, 11, 5, tzinfo=agent.ET),
+        market_open=True, connectivity_ok=True)
+    assert hb2 is not None and hb2.status == "Active"
+
+
+def test_maybe_heartbeat_reports_connectivity_error(tmp_path) -> None:
+    cfg = Config(session_file=str(tmp_path / "s.json"))
+    sess = Session(starting_equity=100_000.0)
+    hb = agent._maybe_heartbeat(sess, cfg, now_et=datetime(2026, 9, 1, 3, 0, tzinfo=agent.ET),
+                                market_open=False, connectivity_ok=False)
+    assert hb is not None and hb.connectivity == "Error"
+
+
+class _BriefConn(_FakeConn):
+    def premarket_gaps(self, tickers):
+        from trading_agent.offhours import TickerGap
+        return [TickerGap("SPY", 600.0, 604.5),    # +0.75% -> alert
+                TickerGap("QQQ", 500.0, 500.4)]    # +0.08% -> flat
+
+
+def test_maybe_morning_brief_only_in_window_and_once_per_day(tmp_path) -> None:
+    cfg = Config(session_file=str(tmp_path / "s.json"), tickers=("SPY", "QQQ"))
+    sess = Session(starting_equity=100_000.0)
+    conn = _BriefConn()
+
+    # 08:50 ET — before the window
+    assert agent._maybe_morning_brief(
+        sess, conn, cfg, now_et=datetime(2026, 9, 1, 8, 50, tzinfo=agent.ET)) is None
+
+    # 09:10 ET — fires
+    text = agent._maybe_morning_brief(
+        sess, conn, cfg, now_et=datetime(2026, 9, 1, 9, 10, tzinfo=agent.ET))
+    assert text and "PRE-MARKET ALERT" in text and "TRENDING" in text
+    assert sess.last_morning_brief_date == "2026-09-01"
+
+    # 09:20 ET same day — already done
+    assert agent._maybe_morning_brief(
+        sess, conn, cfg, now_et=datetime(2026, 9, 1, 9, 20, tzinfo=agent.ET)) is None
+
+
+def test_maybe_post_mortem_after_close_once_per_day(tmp_path) -> None:
+    cfg = Config(session_file=str(tmp_path / "s.json"), tickers=("SPY", "QQQ"))
+    sess = Session(starting_equity=100_000.0)
+    sess.daily_activity = {"2026-09-01": {
+        "date": "2026-09-01", "basket_size": 2, "ticker_scans": 12,
+        "proposed": 2, "approved": 1, "rm_vetoes": 1, "ro_vetoes": 0,
+        "regimes": {"Regime B: Low IV / Range-Bound -> Long Strangle": 10},
+    }}
+    conn = _FakeConn()
+
+    # 15:30 ET — before the close
+    assert agent._maybe_post_mortem(
+        sess, conn, cfg, now_et=datetime(2026, 9, 1, 15, 30, tzinfo=agent.ET)) is None
+
+    # 16:05 ET — fires
+    text = agent._maybe_post_mortem(
+        sess, conn, cfg, now_et=datetime(2026, 9, 1, 16, 5, tzinfo=agent.ET))
+    assert text and "Nightly Post-Mortem" in text
+    assert "Overall Range-Bound" in text
+    assert "Trades approved:          1" in text
+    assert sess.last_post_mortem_date == "2026-09-01"
+
+    # later the same day — no repeat
+    assert agent._maybe_post_mortem(
+        sess, conn, cfg, now_et=datetime(2026, 9, 1, 16, 30, tzinfo=agent.ET)) is None

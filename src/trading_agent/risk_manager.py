@@ -49,12 +49,19 @@ class OrderLeg:
 @dataclass(frozen=True)
 class ProposedOrder:
     wing_width: float                 # $, the wider wing (drives max loss)
-    net_credit: float                 # $ per spread (mid-price estimate)
+    net_credit: float                 # $ per spread (mid-price estimate; negative = net debit)
     quantity: int                     # number of spreads / condors
     legs: tuple[OrderLeg, ...] = ()
+    # Per-CONTRACT worst-case loss in $ (already x100). Set by debit structures
+    # (e.g. a long strangle) where "(wing_width - net_credit)" does not express
+    # risk. When None, the classic credit-spread formula below is used. This does
+    # not change any limit — gate 1 still caps risk at 1.5% of current equity.
+    max_loss: float | None = None
 
     @property
     def risk_dollars(self) -> float:
+        if self.max_loss is not None:
+            return self.max_loss * self.quantity
         return (self.wing_width - self.net_credit) * CONTRACT_MULTIPLIER * self.quantity
 
 
@@ -109,10 +116,27 @@ class ExpiringPosition:
 # Gate 5 — defined-risk invariant
 # --------------------------------------------------------------------------- #
 def is_defined_risk(legs: tuple[OrderLeg, ...]) -> bool:
-    """True when, for every option right present, the total bought contracts
-    equal the total sold contracts (so every short leg is covered)."""
+    """True when the position cannot lose more than a known, bounded amount.
+
+    Two shapes qualify:
+
+    * **All-long** — every leg is ``buy`` (e.g. a long strangle / straddle /
+      reverse spread). The most that can be lost is the premium paid, so it is
+      inherently defined-risk and never naked short. A single ``sell`` leg drops
+      out of this branch and must satisfy the matched-legs rule below.
+    * **Matched legs** — for every option right present, total bought contracts
+      equal total sold contracts, so every short leg is covered (iron condor,
+      vertical credit spread).
+
+    This does not loosen anything for spreads: any position containing a short
+    leg still goes through the unchanged matched-legs check.
+    """
     if not legs:
         return False
+
+    if all(leg.action == "buy" and leg.quantity > 0 for leg in legs):
+        return True
+
     tally: dict[str, list[int]] = {}  # right -> [long_qty, short_qty]
     for leg in legs:
         if leg.action not in ("buy", "sell") or leg.quantity <= 0:

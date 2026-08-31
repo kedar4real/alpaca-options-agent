@@ -70,6 +70,7 @@ def get_current_option_chain(creds, current_price, underlying=UNDERLYING):
     """
     return fetch_option_chain(
         creds,
+        underlying=underlying,
         expiry_gte=nth_trading_day(EXPIRY_MIN_TRADING_DAYS),
         expiry_lte=nth_trading_day(EXPIRY_MAX_TRADING_DAYS),
         spot=current_price,
@@ -230,48 +231,63 @@ def evaluate_iv_regime(
     )
 
 
-def log_daily_iv(current_iv, current_price, log_path=IV_HISTORY_PATH):
-    """
-    Append today's ATM IV reading to a local CSV so we build real history
-    over the course of the hackathon. Call this once per day (or once per loop).
+# iv_history.csv is one global file for the whole basket:
+#   timestamp, symbol, iv, rv, spread
+IV_HISTORY_FIELDS = ["timestamp", "symbol", "iv", "rv", "spread"]
+
+
+def log_iv_reading(symbol, iv, rv, spread, log_path=IV_HISTORY_PATH):
+    """Append one IV reading for ``symbol`` to the shared ``iv_history.csv``.
+
+    Called once per ticker per loop cycle — every call is a new row, so the file
+    is a dense unified time-series for the basket. ``read_iv_history`` collapses
+    it to one point per calendar day when feeding the IV-percentile gate.
     """
     file_exists = os.path.isfile(log_path)
     with open(log_path, "a", newline="") as f:
         writer = csv.writer(f)
         if not file_exists:
-            writer.writerow(["timestamp", "underlying_price", "atm_iv"])
-        writer.writerow([datetime.now().isoformat(), current_price, current_iv])
+            writer.writerow(IV_HISTORY_FIELDS)
+        writer.writerow([datetime.now().isoformat(), symbol, iv, rv, spread])
 
 
-def read_iv_history(log_path=IV_HISTORY_PATH):
-    """Read back the IV history CSV as a list of floats."""
+def read_iv_history(symbol=None, log_path=IV_HISTORY_PATH):
+    """IV series for ``symbol`` (all symbols if None), oldest first.
+
+    Collapsed to the **last reading per calendar day** so the IV percentile stays
+    a day-based measure even though the file is appended every cycle. Rows with a
+    blank/unparseable ``iv`` are skipped.
+    """
     if not os.path.isfile(log_path):
         return []
 
-    values = []
-    with open(log_path, "r") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            try:
-                values.append(float(row["atm_iv"]))
-            except (ValueError, KeyError):
+    by_day: dict[str, float] = {}  # "symbol|YYYY-MM-DD" -> latest iv that day
+    with open(log_path, "r", newline="") as f:
+        for row in csv.DictReader(f):
+            if symbol is not None and row.get("symbol") != symbol:
                 continue
-    return values
+            try:
+                iv = float(row["iv"])
+            except (ValueError, KeyError, TypeError):
+                continue
+            day = row.get("timestamp", "")[:10]
+            by_day[f"{row.get('symbol')}|{day}"] = iv
+    return [by_day[k] for k in sorted(by_day)]
 
 
-def get_market_snapshot():
+def get_market_snapshot(symbol=UNDERLYING, creds=None):
     """
-    Main entry point — call this from strategy.py.
-    Returns a single dict with everything the strategy layer needs.
+    Main entry point — call this from strategy.py, once per basket ticker.
+    Returns a single dict with everything the strategy layer needs for ``symbol``.
     """
-    creds = load_credentials()
+    creds = creds or load_credentials()
 
-    current_price = get_underlying_price(creds)
-    chain = get_current_option_chain(creds, current_price)
+    current_price = get_underlying_price(creds, symbol)
+    chain = get_current_option_chain(creds, current_price, underlying=symbol)
     current_iv, atm_strike = get_atm_iv(chain, current_price)
 
-    # Realized vol over the last REALIZED_VOL_WINDOW sessions (needs window + 1 closes)
-    closes = get_daily_closes(creds, sessions=REALIZED_VOL_WINDOW + 1)
+    # Daily closes drive both realized vol and strategy.py's efficiency ratio.
+    closes = get_daily_closes(creds, symbol, sessions=REALIZED_VOL_WINDOW + 1)
     realized_vol = calculate_realized_vol(closes)
     iv_rv_spread = (
         round(current_iv - realized_vol, 4)
@@ -279,15 +295,16 @@ def get_market_snapshot():
         else None
     )
 
-    log_daily_iv(current_iv, current_price)
+    log_iv_reading(symbol, current_iv, realized_vol, iv_rv_spread)
 
-    # Read back our accumulated history and run the IV-regime gate
-    historical_iv = read_iv_history()
+    # Read back this symbol's accumulated history and run the IV-regime gate
+    historical_iv = read_iv_history(symbol)
     iv_regime = evaluate_iv_regime(current_iv, historical_iv)
 
     return {
         "timestamp": datetime.now().isoformat(),
-        "underlying": UNDERLYING,
+        "symbol": symbol,
+        "underlying": symbol,
         "current_price": current_price,
         "atm_iv": current_iv,
         "realized_vol": realized_vol,
@@ -295,15 +312,20 @@ def get_market_snapshot():
         "atm_strike": atm_strike,
         "iv_percentile": iv_regime.iv_percentile,
         "iv_regime": iv_regime,
+        "daily_closes": closes,
         "chain": chain,
     }
 
 
 if __name__ == "__main__":
-    # Quick sanity test — run this file directly to confirm the pipeline works
-    snapshot = get_market_snapshot()
+    import sys
+
+    # Quick sanity test — run this file directly to confirm the pipeline works.
+    # Optional arg: ticker (default SPY), e.g. `python -m trading_agent.data QQQ`
+    sym = sys.argv[1].upper() if len(sys.argv) > 1 else UNDERLYING
+    snapshot = get_market_snapshot(sym)
     print(f"Timestamp:        {snapshot['timestamp']}")
-    print(f"SPY price:        ${snapshot['current_price']:.2f}")
+    print(f"{sym} price:        ${snapshot['current_price']:.2f}")
     print(f"ATM strike:       {snapshot['atm_strike']}")
     print(f"ATM IV:           {snapshot['atm_iv']}")
     print(f"Realized vol:     {snapshot['realized_vol']} (10d, annualized)")

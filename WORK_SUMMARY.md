@@ -1,6 +1,6 @@
-# Work Summary — SPY Options Trading Agent
+# Work Summary — Multi-Ticker Options Trading Agent
 
-_Generated: 2026-08-31_
+_Generated: 2026-08-31 · last updated: 2026-09-01_
 
 Rolling summary of everything built so far for the Alpaca x LabLab.ai hackathon
 agent. Companion to `PROJECT_STATE.md` (current architecture) and `DEVLOG.md`
@@ -10,27 +10,34 @@ agent. Companion to `PROJECT_STATE.md` (current architecture) and `DEVLOG.md`
 
 ## 1. Executive summary
 
-A **market-data layer**, an **iron-condor builder**, a **pre-trade risk
-manager**, a **gated order executor**, an **LLM second-opinion gate**, and the
-**autonomous loop** that drives them for a SPY adaptive options agent are built
-and tested — **175 offline tests** (the data path, the LLM providers, and the
-agent startup are also verified live against the Alpaca paper account):
+A **multi-ticker market-data layer**, a **regime-aware structure builder**, a
+**pre-trade risk manager**, a **gated order executor**, an **LLM second-opinion
+gate**, and the **autonomous loop** that drives them across a `SPY/QQQ/IWM/TLT`
+basket are built and tested — **250 offline tests** (the data path, the LLM
+providers, agent startup, and multi-ticker regime detection are also verified
+live against the Alpaca paper account):
 
 - **`alpaca_trader.py`** — low-level Alpaca access: credentials, spot price,
-  option-chain fetch with expiry/strike filters, OCC symbol parsing, a 20–30
-  delta scanner with bid/ask spread metrics, and a CLI.
-- **`data.py`** — strategy-facing layer: near-the-money chain pull, ATM implied
-  volatility, 10-day realized vol + IV−RV spread, a daily IV-history log, an
-  IV-percentile calc, the IV-regime gate (`evaluate_iv_regime`, with a Hackathon
-  Mode static fallback), and a single `get_market_snapshot()` entry point.
-- **`strategy.py`** — proposes a defined-risk **iron condor** from a snapshot:
-  IV-regime gate → IV−RV spread gate → nearest 1–3 DTE expiry → short legs ~0.225
-  delta → long legs ~0.10 delta (or ~$5 wide) → credit ≥ 25% of width → size
-  within the **$1,500** (1.5%) risk cap. Proposes only; does not place orders.
+  option-chain fetch with `underlying=` + expiry/strike filters, OCC symbol
+  parsing, a 20–30 delta scanner, and a CLI.
+- **`data.py`** — strategy-facing layer, **per basket ticker**
+  (`get_market_snapshot(symbol)`): near-the-money chain pull, ATM IV, 10-day
+  realized vol + IV−RV spread, `daily_closes`, the IV-regime gate, and one shared
+  `iv_history.csv` (`timestamp,symbol,iv,rv,spread`, appended per ticker/cycle;
+  `read_iv_history(symbol)` collapses to one point/day for the percentile).
+- **`strategy.py`** — **dynamic market-regime switch**. `select_regime()` reads
+  the IV-RV spread and a Kaufman **efficiency ratio** (`is_range_bound`,
+  window 10, threshold 0.3): Regime A (IV rich + elevated) → **iron condor**,
+  B (IV ≪ RV + range-bound) → **long strangle**, C (IV ≪ RV + trending) →
+  **bull put / bear call**. `build_strategy_plan()` logs the choice explicitly,
+  dispatches, and sizes every structure within the **$1,500** (1.5%) cap.
+  Proposes only.
 - **`risk_manager.py`** — six hard gates: 1.5%/trade risk cap, 2.5% daily-loss
-  halt, 5% total-drawdown floor (+ sticky halt), max 3 concurrent positions,
-  defined-risk leg-match invariant, and a ≤1-session-to-expiry force-close flag.
-  Pure/deterministic; decides only, never trades.
+  halt, 5% total-drawdown floor (+ sticky halt), **max 3 concurrent positions
+  globally across the basket**, defined-risk invariant, and a ≤1-session-to-expiry
+  force-close flag. **Limit values unchanged**; Gate 5 additionally recognises an
+  all-long position (long strangle) as defined-risk, and `ProposedOrder.max_loss`
+  lets a debit structure feed gate 1 its true worst case. Decides only.
 - **`risk_officer.py`** — LLM second opinion. After `check_order()` approves,
   asks an LLM to APPROVE/VETO with a 2-3 sentence thesis on the IV regime, IV-RV
   spread, and exposure. **Featherless AI** (hosted, primary) with **local Ollama**
@@ -42,12 +49,21 @@ agent startup are also verified live against the Alpaca paper account):
   **sends nothing** unless approved (no bypass parameter). Approved orders go out
   as one `OrderClass.MLEG` limit order with the four OCC legs. Every attempt logs
   the full `RiskDecision.describe()`.
-- **`main.py`** — the autonomous loop. Every 15 min in market hours: refresh
-  snapshot + `AccountState` (persisted `starting_equity`), **manage open
-  positions first** (50% profit target / 2× stop / expiry close), latch the
-  sticky halt, then run **strategy → risk_manager → risk_officer → executor in
-  that exact order** if there's room and no halt. Logs a `DecisionSummary` every
-  cycle; each cycle is isolated by try/except; daily copy-paste recap at 4 pm ET.
+- **`main.py`** — the autonomous loop. Every 15 min in market hours: one global
+  `AccountState` (persisted `starting_equity`), **manage open positions first**
+  across the basket (credit +50%/-2×, debit strangle +50%/-50%, expiry), latch
+  the sticky halt, then **for each ticker** run **strategy (regime switch) →
+  risk_manager → risk_officer → executor in that exact order** while under the
+  global 3-position cap. One `DecisionSummary` per ticker; per-ticker + per-cycle
+  try/except; daily copy-paste recap (per ticker/structure/regime) at 4 pm ET.
+- **`offhours.py`** — **Off-Hours Intelligence**, around the loop, never in it
+  (no risk/strategy change, stdlib only). Hourly **Heartbeat** (open or closed:
+  status / connectivity / IV-readings-stored), a 09:00–09:30 ET **Morning Brief**
+  (pre-market gap per ticker vs prior close → **PRE-MARKET ALERT** + Trending-vs-
+  Range read when `|gap| > 0.5%`), and a 16:00 ET **Nightly Post-Mortem** (the
+  day's pipeline funnel — scans → proposed → approved, vetoes per gate — plus
+  open unrealized P&L and the dominant regime). All three also stream to
+  `logs/agent_activity.log`.
 
 Per-trade risk is **1.5% everywhere**: `risk_manager.MAX_RISK_PER_TRADE_PCT` is
 the single source of truth, `strategy.py` imports it, and `CLAUDE.md` rule 2 says
@@ -112,7 +128,7 @@ chain code).
 | `get_current_option_chain(creds, current_price)` | Chain for contracts expiring in the next **1–3 trading days**, strikes within **±5%** of spot. |
 | `get_atm_iv(chain, current_price)` | Nearest-strike contract's implied volatility as today's reference IV. |
 | `calculate_realized_vol(closes, *, window=10, annualization=252)` | Sample stdev (ddof=1) of daily log returns over the last `window` sessions × √252. `None` if < `window + 1` positive closes. |
-| `log_daily_iv(...)` / `read_iv_history(...)` | Append/read `iv_history.csv` (`timestamp, underlying_price, atm_iv`). |
+| `log_daily_iv(...)` / `read_iv_history(...)` | Append/read `iv_history.csv` (`timestamp, underlying_price, atm_iv`). `log_daily_iv` writes **at most one row per calendar day** — a no-op if today's date is already present (first reading of the day wins), so `main.py` can call it every cycle. |
 | `calculate_iv_percentile(current_iv, series)` | Percentile rank vs. history; `None` until ≥ 10 rows or if IV is missing. |
 | `evaluate_iv_regime(current_iv, series)` | The gate. Returns `IVRegime(atm_iv, iv_percentile, mode, trade_eligible, reason)`. `mode="percentile"` (eligible ≥ 50) once ≥ 10 IV days logged; else `mode="hackathon_static"` — **Hackathon Mode**, eligible when ATM IV > 15%. |
 | `get_historical_iv_series(...)` | Deliberate placeholder returning `[]` — real history is accumulated from the daily log, not faked. |
@@ -126,38 +142,48 @@ Tunables (module constants): `STRIKE_WINDOW_PCT = 0.05`,
 **Run:** `python -m trading_agent.data` → prints price / ATM strike / ATM IV / realized vol /
 IV−RV spread / IV percentile / IV-regime verdict / chain size.
 
-### 3.4 `strategy.py` — iron condor builder
+### 3.4 `strategy.py` — dynamic market-regime switch
 
-Consumes `get_market_snapshot()`. **Proposes** a single defined-risk iron
-condor; places no orders.
+Consumes `get_market_snapshot(symbol)`. **Proposes** a defined-risk structure
+chosen by the volatility regime; places no orders.
+
+**Range-bound filter (efficiency ratio):**
 
 | Function | Purpose |
 |---|---|
-| `pick_expiry(contracts, today=None)` | Earliest listed expiry within `nth_trading_day(1)`…`nth_trading_day(3)`. |
-| `select_short_leg(legs)` | Contract nearest **0.225** `|delta|`, preferring the 0.20–0.25 band. |
-| `select_long_leg(legs, short_leg, right)` | ~**0.10** `|delta|` (±0.05 tol); else the strike nearest **short ± $5**. Returns `(contract, rule)` — `rule ∈ {delta, otm-offset, none-further-otm}`. |
-| `plan_iron_condor(contracts, *, underlying_price, iv_regime, iv_rv_spread=None, today=None)` | Core: IV gate → **IV-RV gate** → expiry → 4 legs → credit/width → risk sizing. Testable without network. |
-| `build_iron_condor(snapshot=None, *, today=None)` | Fetches a snapshot if not given, then calls `plan_iron_condor` (passing `snapshot["iv_rv_spread"]`). |
-| `IronCondorPlan` (dataclass) | `eligible`, `reason`, `expiry`, `iv_rv_spread`, `legs[4]` (`CondorLeg(action, right, contract)`), `net_credit` (mid estimate), `wing_width` (wider side), `credit_to_width`, `max_loss_per_contract`, `suggested_contracts`. `.describe()` pretty-prints. |
+| `efficiency_ratio(prices, window=10)` | `|net change over window| / Σ|daily abs changes|`. 1.0 = a straight line; ~0 = chop. `None` if < `window+1` prices; `0.0` if flat. |
+| `is_range_bound(prices, window=10, threshold=0.3)` | `True` if ER < `threshold` (range-bound), `False` if ≥ (trending), `None` without enough history. |
+| `trend_direction(prices, window=10)` | `"up"` / `"down"` / `"flat"` (first vs last close). |
 
-Rules enforced: iron condor only · IV must be ≥ **0.02** annualized vol points
-above 10-day realized vol (`MIN_IV_RV_SPREAD`; skipped when `iv_rv_spread` is
-`None`) · net credit ≥ **25%** of wing width · max loss per contract × sizing ≤
-**$1,500** (1.5% of a nominal $100k) → `suggested_contracts = floor(1500 /
-max_loss_per_contract)`.
+**Regime switch** — `select_regime(snapshot) -> RegimeDecision(regime, label, reason, efficiency_ratio, direction)`:
 
-Tunables: `SHORT_DELTA_TARGET/MIN/MAX = 0.225/0.20/0.25`, `LONG_DELTA_TARGET =
-0.10` (`LONG_DELTA_TOLERANCE = 0.05`), `LONG_OTM_OFFSET = 5.0`,
-`MIN_CREDIT_TO_WIDTH = 0.25`, `MIN_IV_RV_SPREAD = 0.02`,
-`DTE_MIN/MAX_TRADING_DAYS = 1/3`, `MAX_RISK_PER_TRADE = MAX_RISK_PER_TRADE_PCT ×
-$100k = $1,500` (fraction imported from `risk_manager`).
+| Regime | Condition | Structure | Builder |
+|---|---|---|---|
+| **A** High vol | `iv_rv_spread ≥ +0.02` **and** IV elevated (`iv_regime.trade_eligible`) | Iron Condor | `plan_iron_condor` |
+| **B** Low vol / range-bound | `iv_rv_spread ≤ −0.02` **and** ER < 0.3 | **Long Strangle** (buy ~0.25Δ P + C; net **debit**; max loss = debit) | `plan_long_strangle` |
+| **C** Low vol / trending | `iv_rv_spread ≤ −0.02` **and** ER ≥ 0.3 | **Bull Put** (trend up) / **Bear Call** (down) credit spread | `plan_bull_put` / `plan_bear_call` |
+| — | neutral spread, or B/C without price history | no trade | — |
 
-**Run:** `python -m trading_agent.strategy` → prints the proposed condor (or the block reason).
+`build_strategy_plan(snapshot, *, today=None)` is the entry point `main.py` uses:
+it runs `select_regime`, **logs the choice explicitly** (`REGIME [SPY]: Regime B:
+Low IV / Range-Bound -> Long Strangle | <quantitative detail>` and
+`STRATEGY [SPY]: long_strangle selected — …`), dispatches, and tags the plan with
+`structure` / `regime` / `regime_reason` / `symbol` / `direction` — which
+`main.evaluate_new_trade` forwards into the `risk_officer` prompt and the daily
+summary. `IronCondorPlan` (alias `StrategyPlan`) is the shared result type;
+`net_credit < 0` marks a debit; `max_loss_per_contract` is always the true worst
+case; every structure sizes to `floor($1,500 / max_loss_per_contract)`. Verticals
+still enforce the **25%** credit/width gate.
 
-Illustrative build (gate forced open, 2026-08-31): realized vol ≈ 0.077, IV−RV
-spread ≈ +0.045 (> 0.02 ✓); expiry 2026-09-01, ~0.22Δ shorts / ~0.10Δ longs, a
-4-wide wing. Exact strikes, credit, and contract count move with the market each
-run; sizing is `floor($1,500 / max-loss-per-contract)`.
+New tunables: `LOW_IV_RV_SPREAD = -0.02`, `EFFICIENCY_RATIO_WINDOW = 10`,
+`RANGE_BOUND_ER = 0.30`, `STRANGLE_DELTA_TARGET = 0.25`. Existing delta / credit /
+risk constants unchanged.
+
+**Run:** `python -m trading_agent.strategy [TICKER]`.
+
+Live check (2026-09-01): SPY/QQQ/IWM neutral (no trade); **TLT → Regime B Long
+Strangle** — `IV 0.061 ≪ RV (spread −0.062)`, `ER 0.230 < 0.3` → real 82P/83C
+strangle proposed at $0.20 debit.
 
 ### 3.5 `risk_manager.py` — pre-trade gates + expiry monitor
 
@@ -167,20 +193,20 @@ never places or cancels orders.
 | Function / model | Purpose |
 |---|---|
 | `check_order(order, account)` → `RiskDecision` | Runs gates 1–5, collects **every** failure (not short-circuit). `RiskDecision` = `approved`, `blocks[]`, `checks{gate: passed}`, plus computed `order_risk` / `max_risk_allowed` / `daily_loss` / `total_drawdown` / … and `.describe()`. |
-| `is_defined_risk(legs)` | Gate 5 — per option right, bought contracts == sold contracts (rejects naked, qty-mismatch, empty, bad-action). |
+| `is_defined_risk(legs)` | Gate 5 — **all-long** (every leg `buy`, qty > 0 → long strangle) OR per right bought == sold. Any `sell` leg still goes through the matched-legs rule; naked / qty-mismatch / empty / bad-action still rejected. |
 | `flag_expiring_positions(positions, today=)` → `list[ExpiringPosition]` | Gate 6 — positions ≤ `EXPIRY_CLOSE_TRADING_DAYS` (1) NYSE sessions from expiry. |
 | `trading_days_until(target, today=)` | NYSE-session count to a date (0 if on/past); holiday-aware via `trading_sessions`. |
-| `OrderLeg`, `ProposedOrder` (`.risk_dollars`), `OpenPosition`, `AccountState` | Inputs. `AccountState` = starting / day-start / current equity, `open_positions`, sticky `trading_halted`. |
+| `OrderLeg`, `ProposedOrder` (`.risk_dollars`, optional `max_loss`), `OpenPosition`, `AccountState` | Inputs. `ProposedOrder.max_loss` (per-contract $, set by debit structures) overrides the `(wing − credit)` formula in `.risk_dollars`; gate 1 still caps at 1.5%. `AccountState.open_positions` is **global across the basket**. |
 
 **Gates & boundaries**
 
 | # | Gate | Threshold | At exactly the threshold |
 |---|---|---|---|
-| 1 | Max risk / trade | `(wing − credit) × 100 × qty ≤ 1.5% × current_equity` (`MAX_RISK_PER_TRADE_PCT`, shared with `strategy.py`) | **allowed** (`≤`) |
+| 1 | Max risk / trade | `risk_dollars ≤ 1.5% × current_equity` — `risk_dollars` = `max_loss × qty` when set, else `(wing − credit) × 100 × qty` (`MAX_RISK_PER_TRADE_PCT`, shared with `strategy.py`) | **allowed** (`≤`) |
 | 2 | Daily loss halt | `day_start − current ≥ 2.5% × starting_equity` | **halts** (`≥`) |
 | 3 | Total drawdown floor | `starting − current ≥ 5% × starting_equity`, or `trading_halted` | **halts** (`≥`) |
-| 4 | Max concurrent positions | `len(open_positions) < 3` | 3 open → **blocks** the 4th |
-| 5 | Defined-risk invariant | long contracts == short contracts, per right | — |
+| 4 | Max concurrent positions | `len(open_positions) < 3` — **counted globally over the whole basket** | 3 open → **blocks** the 4th |
+| 5 | Defined-risk invariant | all-long (strangle) OR long == short per right | — |
 | 6 | Expiration auto-close | `trading_days_until(expiry) ≤ 1` | flags 0- and 1-DTE |
 
 **Run:** `python -m trading_agent.risk_manager` → demo order through `.describe()` + an expiry flag.
@@ -196,8 +222,8 @@ Talks to the broker; decides nothing.
 | Function / model | Purpose |
 |---|---|
 | `submit_iron_condor(order, account, *, client=None, creds=None)` → `ExecutionResult` | **Runs `check_order()` first.** Not approved → `submitted=False`, nothing sent. Approved → build MLEG request → `TradingClient.submit_order`. Logs `RiskDecision.describe()` every time (`WARNING "ORDER BLOCKED"` / `INFO "ORDER APPROVED"` + `"ORDER SUBMITTED id=…"`). Broker exceptions are caught into `ExecutionResult.error`, never raised. |
-| `from_iron_condor_plan(plan)` → `ProposedOrder` | Maps `strategy.IronCondorPlan` → order with the 4 OCC symbols + `suggested_contracts`. Raises if `not plan.eligible` (strategy rejected it — no override) or the plan has no legs / no sizing. |
-| `_build_mleg_request(order)` → `LimitOrderRequest` | `order_class=MLEG`, `qty=N`, `time_in_force=DAY`, `limit_price=round(abs(net_credit), 2)`, `legs=[OptionLegRequest(occ_symbol, side, ratio_qty=1) × 4]`. Rejects non-4-leg, `qty<1`, or a leg with no symbol. |
+| `from_plan(plan)` (alias `from_iron_condor_plan`) → `ProposedOrder` | Maps any `strategy.IronCondorPlan` (condor / strangle / vertical) → order with the OCC symbols, `suggested_contracts`, and `max_loss=plan.max_loss_per_contract`. Raises if `not plan.eligible` (no override) or no legs / no sizing. |
+| `_build_mleg_request(order)` → `LimitOrderRequest` | `order_class=MLEG`, `qty=N`, `time_in_force=DAY`, `limit_price=round(abs(net_credit), 2)` (= debit for a strangle), `legs=[OptionLegRequest(occ_symbol, side, ratio_qty=1) × (2 or 4)]`. Rejects anything other than 2 or 4 legs, `qty<1`, or a leg with no symbol. |
 | `ExecutionResult` | `submitted`, `decision`, `order`, `submitted_request`, `error`, `.order_id`. |
 
 **No bypass:** the signature is exactly `order, account, client, creds` — no
@@ -265,28 +291,61 @@ one `run_cycle()` every `AGENT_LOOP_INTERVAL_SECONDS` (default 900), **only whil
 | Function / model | Purpose |
 |---|---|
 | `startup(config)` | First run: fetch REAL equity from Alpaca, persist as `starting_equity` in `session.json`. Restart: load it, **never re-derive** (would corrupt the 5% floor). Then `risk_officer.warm_up()` + startup log (ts, account id, equities). |
-| `run_cycle(conn, session, config)` | Snapshot + `AccountState` → manage positions → sticky-halt latch → `evaluate_cycle_decision()` → log `DecisionSummary` → persist `session.json`. |
-| `decide_exit(valuation, *, is_expiring, ...)` | Pure. Close reason in the spec's order: **profit-target** (≥ 50% of entry credit captured) → **stop-loss** (loss ≥ 2× entry credit) → **expiry**. First match wins. Thresholds are config. |
-| `value_condor(legs, mid_by_symbol)` | Pure. Net mid $ to buy the structure back (pay for legs sold, receive for legs bought). `None` if a leg has no quote. |
-| `manage_open_positions(session, valuations, expiring_ids, *, close_fn, ...)` | Closes every triggered condor via `close_fn`, records a history event with realized P&L, drops it from `session.open_condors`. A `close_fn` exception keeps the position. |
+| `run_cycle(conn, session, config)` | One global `AccountState` → manage positions across the basket → sticky-halt latch → **loop `config.tickers`**: `get_market_snapshot(sym)` → `evaluate_cycle_decision()`, rebuilding `account` after each open → one `DecisionSummary` per ticker → fold the cycle's decisions into `session.daily_activity` (the Post-Mortem funnel) → persist `session.json`. Returns `CycleReport(decisions[], closed[], opened[])`. |
+| `decide_exit(valuation, *, is_expiring, ...)` | Pure, **structure-aware**. Credit (condor / vertical): **profit-target** (≥ 50% of credit captured) → **stop-loss** (loss ≥ 2× credit). Debit (long strangle): **profit** (≥ +50% of premium) → **stop** (≤ −`AGENT_DEBIT_STOP_FRACTION`, default 50%, of premium). Then **expiry**. First match wins. |
+| `value_condor(legs, mid_by_symbol)` | Pure. Net mid $ to close (pay for legs sold, receive for legs bought — sign convention works for all-long debit structures too). `None` if a leg has no quote. |
+| `manage_open_positions(...)` | Closes every triggered position via `close_fn`, records a history event with `symbol`/`structure`/realized P&L, drops it. A `close_fn` exception keeps the position. |
 | `halt_status(account)` / `update_sticky_halt(session, account)` | Same thresholds as `risk_manager`, vs **persisted** `starting_equity`. The 5% breach latches `session.trading_halted = True` permanently. |
-| `evaluate_new_trade(snapshot, account, *, config, plan_fn=, to_order_fn=, check_fn=, review_fn=, submit_fn=, call_log=)` | Runs **strategy → risk_manager → risk_officer (45 s) → executor in that exact order**; a rejection at any stage returns immediately and later stages never run. `executor.submit_iron_condor()` re-runs `check_order()` internally. All stages injectable for tests. |
-| `evaluate_cycle_decision(...)` | Capacity (< 3) + halt prechecks, then `evaluate_new_trade`. Always returns a `DecisionSummary` (`Skipped`/`Halted`/`Blocked`/`Vetoed`/`Executed`/`Error`). |
-| `daily_summary_text(session, *, current_equity, day_start_equity, et_date)` | Copy-paste-ready recap: equity, day P&L, trades opened/closed today, open book, hashtags. Emitted at/after 16:00 ET, once per ET day. |
+| `evaluate_new_trade(snapshot, account, *, config, plan_fn=, to_order_fn=, check_fn=, review_fn=, submit_fn=, call_log=)` | Runs **strategy (`build_strategy_plan`) → risk_manager → risk_officer (45 s) → executor in that exact order**; a rejection at any stage returns immediately. Forwards the plan's regime into the `risk_officer` prompt. All stages injectable. |
+| `evaluate_cycle_decision(...)` | Capacity (< 3, **global**) + halt prechecks, then `evaluate_new_trade`. Always returns a `DecisionSummary` (`Skipped`/`Halted`/`Blocked`/`Vetoed`/`Executed`/`Error`). |
+| `daily_summary_text(...)` | Copy-paste-ready recap: equity, day P&L, trades opened/closed today **with ticker + structure + regime**, open book per ticker, hashtags. At/after 16:00 ET, once per ET day. |
+| `_maybe_heartbeat / _maybe_morning_brief / _maybe_post_mortem` | Off-hours-intelligence hooks called every loop, each gated internally by a session marker (`last_heartbeat_at` / `last_morning_brief_date` / `last_post_mortem_date`). Cheap no-ops until due; never block a cycle. Pure rendering lives in `offhours.py`. |
+| `AlpacaConnection.premarket_gaps(tickers)` | Per-ticker reference price vs prior daily close → `offhours.TickerGap[]` for the Morning Brief. One bad ticker is skipped. |
 
 **Resilience:** every cycle is wrapped in try/except — one bad cycle logs and the
-loop continues, never crashes. Logs to console **and** `logs/agent.log` (both
-UTF-8; stdout reconfigured so Windows cp1252 doesn't mangle output).
+loop continues, never crashes. A `get_clock()` failure still emits an Error
+heartbeat before the loop sleeps. Logs to console **and** `logs/agent.log` (both
+UTF-8; stdout reconfigured so Windows cp1252 doesn't mangle output); off-hours
+events additionally go to `logs/agent_activity.log`.
 
-**Config — env vars, nothing hardcoded:** `AGENT_LOOP_INTERVAL_SECONDS`,
-`AGENT_LOG_LEVEL`, `AGENT_ENV_FILE` (loaded first, wins), `AGENT_SESSION_FILE`,
-`AGENT_LOG_FILE`, `AGENT_REVIEW_TIMEOUT_SECONDS` (45), `AGENT_PROFIT_TARGET_FRACTION`
-(0.50), `AGENT_STOP_LOSS_MULTIPLE` (2.0). `session.json` / `logs/` are git-ignored.
+**Config — env vars, nothing hardcoded:** `AGENT_TICKERS` (`SPY,QQQ,IWM,TLT`),
+`AGENT_LOOP_INTERVAL_SECONDS`, `AGENT_LOG_LEVEL`, `AGENT_ENV_FILE` (loaded first,
+wins), `AGENT_SESSION_FILE`, `AGENT_LOG_FILE`, `AGENT_REVIEW_TIMEOUT_SECONDS`
+(45), `AGENT_PROFIT_TARGET_FRACTION` (0.50), `AGENT_STOP_LOSS_MULTIPLE` (2.0,
+credit stop), `AGENT_DEBIT_STOP_FRACTION` (0.50, long-strangle stop),
+`AGENT_ACTIVITY_LOG` (`logs/agent_activity.log`), `AGENT_HEARTBEAT_MINUTES` (60),
+`AGENT_GAP_ALERT_PCT` (0.5). `session.json` / `logs/` are git-ignored.
 
 **Run:** `python -m trading_agent.main` (or `trading-agent`). Verified live:
 `startup()` created `session.json` (starting_equity $100,000, account
-`PA3ARUWVYYGH`), `warm_up()` OK, `get_clock()` → `is_open=True`. No live
-`run_cycle()` executed (it would place a real paper MLEG order).
+`PA3ARUWVYYGH`), `warm_up()` OK, `get_clock()` → `is_open=True`, and one full
+`strategy` sweep of the basket detected TLT → Regime B. No live `run_cycle()`
+executed (it would place a real paper MLEG order).
+
+---
+
+### 3.9 `offhours.py` — Off-Hours Intelligence (observability, not trading)
+
+Runs *around* the 15-min loop. **No change to `risk_manager.py` or the
+`strategy.py` trade logic; no new dependency.** Pure functions here; `main.py`
+does the time-gating (session markers, same pattern as the daily summary) and IO.
+
+| Function / model | Purpose |
+|---|---|
+| `build_heartbeat(now, *, market_open, connectivity_ok, iv_readings)` → `Heartbeat` | `.render()` → `"[YYYY-MM-DD HH:MM] HEARTBEAT: Status: Idle/Active \| Connectivity: OK/Error \| Memory: N IV readings stored."` — the required format verbatim. |
+| `count_iv_readings(path)` | Raw data-row count of `iv_history.csv` (missing file → 0). |
+| `interval_elapsed(last_iso, now, *, min_gap_seconds=3600)` | Hourly gate for the heartbeat; true on empty / unparseable stamp. |
+| `in_morning_brief_window(now_et)` | `09:00 ≤ t < 09:30` ET. |
+| `TickerGap(symbol, prev_close, premarket)` | `.gap_pct`, `.is_significant(0.5)`, `.regime_hint()` → TRENDING vs RANGE-BOUND read. |
+| `morning_brief_text(gaps, *, et_date, threshold=0.5)` | Lists every ticker's gap; a `> threshold` move emits a **PRE-MARKET ALERT** block; all-flat → "RANGE-BOUND bias intact". |
+| `DailyActivity` + `accumulate_activity(activity, decisions)` | Per-ET-day funnel folded from each cycle's `DecisionSummary[]`: `ticker_scans`, `proposed` (reached `risk_manager`+), `approved` (executed), `rm_vetoes`, `ro_vetoes`, `regimes{}`. Cumulative across cycles; tolerates plan-less decisions. Persisted in `session.daily_activity` (last 10 days). |
+| `dominant_regime(regimes)` | Most-scanned label → "Overall Range-Bound / Trending / High-Volatility / Neutral". |
+| `post_mortem_text(activity, *, et_date, open_positions, unrealized_pnl)` | End-of-day digest: the funnel, open unrealized P&L, dominant regime, regime breakdown, hashtags. |
+
+`main.py` wiring: `setup_logging` adds a third handler so the `agent.offhours`
+logger writes to `AGENT_ACTIVITY_LOG` **and** propagates to the main log +
+console. `run_forever` restructured to emit an Error heartbeat even when
+`get_clock()` throws.
 
 ---
 
@@ -331,9 +390,8 @@ At the same time, `data.py`'s chain pull was narrowed from the full chain to
   `FEATHERLESS_API_KEY` / `FEATHERLESS_MODEL`. No key is hardcoded in source.
   Paper trading.
 - **`main.py` runtime state** (git-ignored): `session.json` (persisted
-  `starting_equity`, sticky halt, tracked condors, event history) and
-  `logs/agent.log`. Tunables via `AGENT_*` env vars (loop interval, log level,
-  env file, session/log paths, review timeout, profit-target / stop-loss).
+  `starting_equity`, sticky halt, tracked positions incl. `symbol`/`structure`,
+  event history) and `logs/agent.log`. Basket + tunables via `AGENT_*` env vars.
 - **Data feed**: **indicative** only. The paper account has no signed OPRA
   agreement, so `--feed opra` / the default OPRA feed returns
   `"OPRA agreement is not signed"`. Indicative still returns quotes, Greeks, IV.
@@ -344,7 +402,7 @@ At the same time, `data.py`'s chain pull was narrowed from the full chain to
 
 ## 6. Tests
 
-`pytest tests/` → **175 tests, all passing, fully offline** (no network / no API
+`pytest tests/` → **250 tests, all passing, fully offline** (no network / no API
 keys — the market calendar ships its data; both LLM providers and Alpaca are mocked):
 
 - **`test_alpaca_trader.py` (25)** — `next_friday`; `nth_trading_day` (10 cases
@@ -352,26 +410,30 @@ keys — the market calendar ships its data; both LLM providers and Alpaca are m
   `parse_occ_symbol`; `_to_contract` spread math (mid / spread / spread_pct,
   zero-mid → NaN, missing quote → `None`, missing Greeks → delta `None`);
   `filter_delta_band`.
-- **`test_data.py` (15)** — `calculate_iv_percentile` (thresholds, missing IV);
-  `evaluate_iv_regime` Hackathon Mode (strict > 15%, IV unavailable) and
-  percentile mode (elevated / below-median / inclusive 50);
-  `calculate_realized_vol` (insufficient/non-positive guards, flat → 0,
-  independent recompute + √252, last-window-only, bigger-swings-higher).
-- **`test_strategy.py` (14)** — short/long leg selection (delta rule, $5 offset
-  fallback, none-further-OTM); full condor build; IV-gate block; **IV−RV gate**
-  (blocks thin spread, passes healthy spread, skips when `None`); thin-credit
-  reject; no-expiry-in-window; position sizing vs the risk cap.
-- **`test_risk_manager.py` (31)** — one block per gate with boundary cases:
-  risk cap exactly met vs one contract over, daily loss / drawdown exactly at
-  threshold, sticky halt, 3rd position OK vs 4th blocked, `is_defined_risk`
-  table (condor / vertical / naked / qty-mismatch / empty / bad-action),
-  `trading_days_until` 0/1/2 DTE with the Labor Day skip, all six gates failing
-  at once.
-- **`test_executor.py` (18)** — blocked / sticky-halt / oversized orders never
-  reach the fake client; approved order builds the right MLEG (4 OCC symbols,
-  SELL/BUY/SELL/BUY, `qty`, `limit_price`); API failure returned in `error` not
-  raised; approved-but-unbuildable (missing symbol) not sent; signature has no
-  bypass param and `check_order` is always called; `IronCondorPlan` → order
+- **`test_data.py` (19)** — `calculate_iv_percentile`; `evaluate_iv_regime`
+  (Hackathon Mode + percentile mode); `calculate_realized_vol`;
+  **`log_iv_reading`** — new `timestamp,symbol,iv,rv,spread` schema, appended on
+  every call for every ticker; **`read_iv_history(symbol)`** filters by symbol,
+  collapses to the last reading per calendar day, tolerates blank IV.
+- **`test_strategy.py` (32)** — leg selection; iron-condor gates; **efficiency
+  ratio / `is_range_bound` / `trend_direction`** (straight line → 1.0, chop → 0,
+  threshold rule, insufficient data → None); **`select_regime`** A/B/C/none
+  (incl. IV-rich-but-not-elevated → none, IV-cheap-but-no-history → none);
+  **`plan_long_strangle`** (2 long legs, net debit, sized ≤ 1.5%, blocked when
+  debit > cap); **`plan_bull_put` / `plan_bear_call`** (credit spreads, 25% gate
+  still applies); **`build_strategy_plan`** dispatch + explicit `REGIME [SYM]` /
+  `STRATEGY [SYM]` logging + no-regime → ineligible.
+- **`test_risk_manager.py` (38)** — the gates with boundary cases;
+  **`is_defined_risk`** table now includes all-long strangle → True, single long
+  → True, all-long-with-zero-qty → False, mixed short leg → still matched-rule
+  (uncovered → False); **`ProposedOrder.max_loss`** overrides the credit formula
+  in `risk_dollars`, and gate 1 both approves a $630 strangle and blocks an
+  $1,800 one at the unchanged 1.5% cap.
+- **`test_executor.py` (23)** — blocked / sticky-halt / oversized never reach the
+  fake client; approved **4-leg** MLEG (SELL/BUY/SELL/BUY, qty, limit); **2-leg
+  strangle** MLEG (BUY/BUY, limit = abs(debit)); **3-leg still rejected**; API
+  failure returned not raised; unbuildable not sent; no bypass param;
+  `from_plan` is the alias and carries `max_loss`; strangle round-trips; plan → order
   round-trips through `submit`.
 - **`test_risk_officer.py` (36)** — mocked `FakeFeatherless` (OpenAI-compatible)
   + mocked Ollama `session`, kept offline by an autouse fixture. `parse_review`
@@ -384,20 +446,34 @@ keys — the market calendar ships its data; both LLM providers and Alpaca are m
   survives missing snapshot keys; prompt / provider / fallback / both-failed all
   logged; `warm_up()` one-token request, `True`/`False` without raising, logs
   the outcome.
-- **`test_main.py` (36)** — **position management**: `value_condor` net-mid /
-  missing-leg → `None`; `decide_exit` profit-target (fires at *exactly* 50%),
-  stop-loss (fires at *exactly* 2× credit lost), expiry-when-flagged,
-  none-when-healthy, profit & stop each beat expiry when both true, configurable
-  thresholds; `manage_open_positions` closes only triggered condors, records
-  history + realized P&L, and **keeps the position if `close_fn` raises**.
-  **Gate sequencing** (spies record every call): full approval →
-  `strategy → to_order → risk_manager → risk_officer → executor` in that exact
-  order; rejection at strategy / risk_manager / risk_officer each stops before
-  every later stage; executor non-submission → `error`; `review_fn` receives the
-  45 s timeout; halt / capacity prechecks skip the pipeline entirely (no spy
-  calls). Plus session persistence (`starting_equity` seeded from live equity
-  once, kept verbatim on restart even after a drawdown), sticky-halt latch,
-  `reconcile_account_state`, `daily_summary_text`, `DecisionSummary.render`.
+- **`test_main.py` (52)** — **position management**: `value_condor`;
+  `decide_exit` credit (exactly 50% / exactly 2× credit, ordering, configurable)
+  **and debit-aware** (strangle +50% / −50% of premium; expiry still forces a
+  close; credit logic proven unchanged); `manage_open_positions` selective close
+  + history + `close_fn`-raises keeps the position.
+  **Gate sequencing** (spies): full approval → `strategy → to_order →
+  risk_manager → risk_officer → executor` in that exact order; rejection at each
+  stage stops the rest; executor non-submission → `error`; 45 s timeout;
+  halt / capacity prechecks skip the pipeline.
+  **Multi-ticker `run_cycle`**: evaluates every basket ticker, the **global
+  3-position cap** stops opening at 3 (`SPY,QQQ,IWM` open, `TLT` skipped), one
+  bad ticker's snapshot logs an error and the rest continue.
+  Plus session persistence, sticky-halt latch, `reconcile_account_state`,
+  `TrackedCondor` symbol/structure round-trip, basket-aware `daily_summary_text`,
+  `DecisionSummary.render`.
+  **Off-hours wiring**: `run_cycle` folds decisions into the persisted
+  `daily_activity` funnel; session round-trips the off-hours markers and a legacy
+  `session.json` (no off-hours keys) still loads; `_maybe_heartbeat` fires once
+  per interval + marks the session + reports the Error path; `_maybe_morning_brief`
+  only inside 09:00–09:30 ET and once/day; `_maybe_post_mortem` only at/after
+  16:00 ET and once/day.
+- **`test_offhours.py` (23)** — `count_iv_readings` (rows only, missing → 0);
+  **Heartbeat** exact format + Active/Idle + OK/Error; `interval_elapsed` hourly
+  gate (no-stamp / unparseable / custom gap); **Morning Brief** window,
+  `TickerGap` gap % + significance, `> 0.5%` → PRE-MARKET ALERT + "TRENDING",
+  all-flat → "RANGE-BOUND", no-quotes path; **Post-Mortem** `accumulate_activity`
+  funnel (cumulative, plan-less tolerant), `dominant_regime` bucketing,
+  `post_mortem_text` digest + no-open-positions, `DailyActivity` dict round-trip.
 
 ---
 
@@ -407,26 +483,29 @@ keys — the market calendar ships its data; both LLM providers and Alpaca are m
    contract across the whole 1–3-day window, so ATM IV varies run-to-run
    (observed ~0.10–0.26). This value now **gates trading** via
    `evaluate_iv_regime()`, so pinning the front expiry is the **top follow-up**.
-2. **IV percentile is `None` until ≥ 10 daily rows.** Until then the gate runs in
-   Hackathon Mode (static > 15%). A scheduled daily `log_daily_iv()` is needed
-   for the history to accumulate.
-3. **`strategy.py` wings can be uneven.** Each long leg is chosen independently
-   (0.10 delta or $5), so the put and call wings may differ; `plan_iron_condor`
-   uses the wider wing for width and max-loss. Add an equal-wing constraint if
-   wanted.
-4. **Credit / fills are mid-price estimates**, no modelled slippage.
-5. **Realized vol is close-to-close over just 10 sessions** — overnight gaps
-   included, no intraday-range (Parkinson/Garman-Klass) estimator, and a short,
-   noisy window. `MIN_IV_RV_SPREAD = 0.02` is a starting assumption to tune.
-6. **`data.py`'s returned `chain` is ±5% / near-dated only.** If `strategy.py`
-   needs wider strikes or further-dated expiries, widen the constants.
-7. **`main.py` has not run a live cycle.** `startup()` + `get_clock()` are
-   verified against the paper account; no `run_cycle()` has executed live (it
-   would place a real paper MLEG order). Position P&L is a mid-price re-quote via
-   `value_condor()` (a leg with no quote → that condor skipped for the cycle,
-   logged); no use of Alpaca's own `unrealized_pl`, no slippage model on close.
-   Condor↔order reconciliation is by our own tracking id in `session.json` — a
-   partial fill or a manual close in the Alpaca UI is not reconciled back.
+2. **IV percentile is `None` until ≥ 10 daily rows *per symbol*.** Until then the
+   gate runs in Hackathon Mode (static > 15%). `iv_history.csv` is appended every
+   cycle; `read_iv_history(symbol)` collapses to one point/day, so the agent has
+   to run on ≥ 10 distinct days before percentile mode engages for a ticker.
+3. **Regime thresholds are first-pass.** "IV ≪ RV" = `iv_rv_spread ≤ −0.02`
+   (mirror of the +0.02 rich side); `RANGE_BOUND_ER = 0.30` is Kaufman's common
+   default; trend direction is a first-vs-last-close sign over 10 sessions. In a
+   genuinely low-IV tape the **Regime C** credit spread often can't clear the 25%
+   credit/width gate → C frequently yields no trade (expected). The **long
+   strangle** is a raw 2-leg debit sized only by the 1.5% cap — no delta hedge.
+4. **Wings can be uneven** (condor) / **Credit & fills are mid-price estimates**,
+   no modelled slippage.
+5. **Realized vol is close-to-close over 10 sessions** — overnight gaps included,
+   no intraday-range estimator.
+6. **`data.py`'s snapshot `chain` is ±5% / near-dated only**; `value_condor`
+   pulls the full near-dated expiry per ticker (`strike_window_pct=None`) — only
+   when positions are open.
+7. **`main.py` has not run a live cycle.** `startup()` + `get_clock()` + a live
+   multi-ticker `strategy` sweep are verified; no `run_cycle()` has executed live
+   (it would place a real paper MLEG order). Position P&L is a mid-price re-quote
+   via `value_condor()`; no use of Alpaca's own `unrealized_pl`. Position↔order
+   reconciliation is by our own tracking id — a partial fill or a manual close in
+   the Alpaca UI is not reconciled back.
 8. **`risk_manager` gate 5 checks quantity match only**, not that strikes
    actually bracket (a "long" far ITM would still pass). Fine for condors built
    by `strategy.py`; tighten if orders can come from elsewhere.
@@ -450,8 +529,6 @@ keys — the market calendar ships its data; both LLM providers and Alpaca are m
   manual-close reconciliation back into `session.json`.
 - **Scheduler** — `main.py` runs its own `time.sleep` loop; no OS-level
   cron/service wrapper or restart-on-crash supervision.
-- **Scheduled daily `log_daily_iv()`** so IV history accumulates and the gate can
-  graduate from Hackathon Mode to percentile mode.
 - **Pin `get_atm_iv()` to the front expiry** (see limitation 1).
 - **Rolling** — `main.py` closes on the triggers; it does not roll a tested
   position out to a new expiry.
@@ -468,20 +545,23 @@ Repo root: `C:\alpaca-hackathon\trading-agent`.
 | `pyproject.toml` | Package + deps (incl. `openai`, `tzdata`; `[dev]` = pytest); `requires-python >=3.12,<3.13` |
 | `.env` | git-ignored — `ALPACA_*`, `FEATHERLESS_API_KEY`, `FEATHERLESS_MODEL` |
 | `src/trading_agent/alpaca_trader.py` | Low-level Alpaca data layer + delta/spread CLI |
-| `src/trading_agent/data.py` | Strategy-facing market-data layer + IV-regime gate (`get_market_snapshot()`) |
-| `src/trading_agent/strategy.py` | Iron condor builder (`build_iron_condor()` → `IronCondorPlan`) |
-| `src/trading_agent/risk_manager.py` | Pre-trade gates (`check_order()` → `RiskDecision`) + expiry monitor |
-| `src/trading_agent/risk_officer.py` | LLM second opinion — Featherless primary + Ollama fallback (`review_trade()` → `OfficerReview`, `warm_up()`); fail-safe VETO only if both fail |
-| `src/trading_agent/executor.py` | Gated MLEG submission (`submit_iron_condor()` → `ExecutionResult`) |
-| `src/trading_agent/main.py` | **Autonomous loop** — startup/session, position management, strict gate sequencing, per-cycle resilience, daily summary (`run_forever()` / `trading-agent`) |
+| `src/trading_agent/data.py` | Per-ticker market-data layer + IV-regime gate (`get_market_snapshot(symbol)`) |
+| `src/trading_agent/strategy.py` | **Regime switch** — efficiency ratio + `select_regime` → condor / long strangle / vertical (`build_strategy_plan()` → `IronCondorPlan`) |
+| `src/trading_agent/risk_manager.py` | Pre-trade gates (`check_order()` → `RiskDecision`) + expiry monitor. Gate 5 = matched OR all-long; `ProposedOrder.max_loss` |
+| `src/trading_agent/risk_officer.py` | LLM second opinion — Featherless primary + Ollama fallback (`review_trade()` → `OfficerReview`, `warm_up()`); regime-aware prompt; fail-safe VETO only if both fail |
+| `src/trading_agent/executor.py` | Gated 2/4-leg MLEG submission (`submit_iron_condor()`, `from_plan()`) |
+| `src/trading_agent/main.py` | **Autonomous loop** — multi-ticker basket, global 3-cap, regime-aware position mgmt, strict gate sequencing, per-cycle resilience, daily summary, off-hours-intelligence wiring (`run_forever()` / `trading-agent`) |
+| `src/trading_agent/offhours.py` | **Off-Hours Intelligence** — Heartbeat / Morning Brief / Nightly Post-Mortem renderers + `DailyActivity` funnel (pure; observability only) |
+| `iv_history.csv` | git-tracked — one shared basket IV log (`timestamp,symbol,iv,rv,spread`) |
 | `tests/test_alpaca_trader.py` | 25 offline unit tests |
-| `tests/test_data.py` | 15 offline tests — IV percentile, regime gate, realized vol |
-| `tests/test_strategy.py` | 14 offline tests — condor construction + IV−RV gate |
-| `tests/test_risk_manager.py` | 31 offline tests — the six risk gates + edge cases |
-| `tests/test_executor.py` | 18 offline tests — gate-before-submit, MLEG build, logging |
+| `tests/test_data.py` | 19 offline tests — IV percentile, regime gate, realized vol, per-ticker IV log |
+| `tests/test_strategy.py` | 32 offline tests — leg selection, efficiency ratio, regime switch A/B/C, long strangle + verticals |
+| `tests/test_risk_manager.py` | 38 offline tests — the six risk gates + edge cases, all-long defined-risk, `max_loss` |
+| `tests/test_executor.py` | 23 offline tests — gate-before-submit, 2/4-leg MLEG, `from_plan` + `max_loss` |
 | `tests/test_risk_officer.py` | 36 offline tests — mocked Featherless + Ollama, both providers, fallback path, both-fail VETO, warm-up |
-| `tests/test_main.py` | 36 offline tests — position-management triggers + strict gate sequencing + session persistence + daily summary |
-| `session.json` / `logs/agent.log` | git-ignored — `main.py` runtime state + log |
+| `tests/test_main.py` | 52 offline tests — position triggers (credit + debit), gate sequencing, multi-ticker global cap, session persistence, daily summary, off-hours scheduling/wiring |
+| `tests/test_offhours.py` | 23 offline tests — heartbeat format, hourly gate, morning-brief window + gap alert, post-mortem funnel + digest |
+| `session.json` / `logs/agent.log` / `logs/agent_activity.log` | git-ignored — `main.py` runtime state + logs (main + off-hours audit trail) |
 | `iv_history.csv` | Generated — daily ATM IV log |
 | `PROJECT_STATE.md` | Current architecture status |
 | `DEVLOG.md` | Dated change log |

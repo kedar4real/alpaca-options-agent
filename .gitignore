@@ -14,3 +14,8 @@ wheels/
 
 .env
 .venv/
+
+# Agent runtime state (main.py)
+session.json
+session.tmp
+logs/

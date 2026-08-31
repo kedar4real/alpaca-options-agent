@@ -1,5 +1,145 @@
 # Dev Log
 
+## 2026-08-31 — `main.py`: the autonomous trading loop
+
+`run_forever(Config.from_env())` (also the `trading-agent` console script) runs
+one `run_cycle()` every `AGENT_LOOP_INTERVAL_SECONDS` (default 900), only while
+`TradingClient.get_clock().is_open`.
+
+- **Startup**: `session.json` — first run persists the REAL Alpaca equity as
+  `starting_equity`; every later run loads it and **never re-derives** it (a
+  re-derive would silently move the 5% drawdown floor on restart). Then
+  `risk_officer.warm_up()` and a startup log line (ts, account id, equities).
+- **Manage positions first**: `decide_exit()` (pure) per tracked condor, in the
+  spec's order — profit-target (≥ 50% of entry credit captured) → stop-loss
+  (loss ≥ 2× entry credit) → expiry (`risk_manager.flag_expiring_positions`,
+  ≤ 1 trading day). Closes via `TradingClient.close_position` per leg.
+- **Halts**: `update_sticky_halt()` latches the comp-level halt into
+  `session.json` once the 5% floor breaks; `halt_status()` (same thresholds as
+  `risk_manager`, vs persisted `starting_equity`) skips new-trade evaluation.
+- **Pipeline**: `evaluate_cycle_decision()` → capacity + halt prechecks →
+  `evaluate_new_trade()` runs **strategy → risk_manager → risk_officer (45s) →
+  executor in that exact order**; any rejection returns immediately.
+- **Every cycle** logs a `DecisionSummary` (Skipped / Halted / Blocked / Vetoed
+  / Executed / Error). Each cycle is wrapped in try/except — one bad cycle logs
+  and the loop continues, never crashes.
+- **Daily summary** at/after 16:00 ET (once per ET day): `daily_summary_text()`
+  — copy-paste-ready recap (equity, day P&L, trades opened/closed, open book).
+- **Config = env vars only**: `AGENT_LOOP_INTERVAL_SECONDS`, `AGENT_LOG_LEVEL`,
+  `AGENT_ENV_FILE` (loaded first, wins), `AGENT_SESSION_FILE`, `AGENT_LOG_FILE`,
+  `AGENT_REVIEW_TIMEOUT_SECONDS`, `AGENT_PROFIT_TARGET_FRACTION`,
+  `AGENT_STOP_LOSS_MULTIPLE`. Logs to console + `logs/agent.log` (both UTF-8;
+  stdout reconfigured so Windows cp1252 doesn't mangle em dashes).
+- `__init__.py` `main()` now delegates to `main.run_forever` (was the uv
+  placeholder). Added `tzdata` dep (ET clock on Windows). `session.json`,
+  `session.tmp`, `logs/` added to `.gitignore`.
+
+**Tests** — `tests/test_main.py` (36), fully offline: `value_condor`,
+`decide_exit` (all triggers + exact boundaries + ordering + configurable
+thresholds), `manage_open_positions` (selective close, history/P&L, close_fn
+failure keeps the position), gate sequencing with spies (exact order + short-
+circuit at every stage + 45s timeout passthrough), halt/capacity prechecks,
+session persistence (starting_equity kept verbatim on restart after a drawdown),
+sticky-halt latch, `reconcile_account_state`, `daily_summary_text`. Suite
+**139 → 175**.
+
+Live check: `startup()` against the paper account created `session.json`
+(starting_equity $100,000, account `PA3ARUWVYYGH`), `warm_up()` OK, `get_clock()`
+returned `is_open=True`. No live `run_cycle()` run — it would place a real paper
+MLEG order.
+
+## 2026-08-31 — `risk_officer`: Featherless AI primary + Ollama fallback
+
+`review_trade()` now tries two providers instead of one:
+
+1. **Featherless AI** (primary) — hosted, OpenAI-compatible, via the new
+   `openai` dependency. `OpenAI(base_url=FEATHERLESS_BASE_URL,
+   api_key=FEATHERLESS_API_KEY, max_retries=0, timeout=45)` then
+   `chat.completions.create(model=FEATHERLESS_MODEL, messages=[{role:"user",
+   content:prompt}])`, reading `choices[0].message.content`.
+2. **Ollama** (fallback) — the existing local `/api/generate` path, run
+   automatically on **any** Featherless failure (connection, timeout, auth/API
+   error, no choices, empty content, or an unparseable `VERDICT`-less reply), or
+   when no `FEATHERLESS_API_KEY` is set.
+
+Same `build_prompt()` and `parse_review()` for both — one `OfficerReview`
+shape, now with a `provider` field (`"featherless"` / `"ollama"` / `"none"`).
+**Fail-safe VETO only if BOTH providers fail** (`ok=False, provider="none"`,
+`error` names both failures, `raw_response` keeps the last body).
+
+- New env (auto-loaded from `.env` via `_ensure_env_loaded()`, mirroring
+  `alpaca_trader`): `FEATHERLESS_API_KEY`, `FEATHERLESS_MODEL`
+  (default `Qwen/Qwen2.5-7B-Instruct` — mid-size, non-gated, 32k ctx, free
+  tier), `FEATHERLESS_BASE_URL`, `FEATHERLESS_TIMEOUT`.
+- `FEATHERLESS_API_KEY` + `FEATHERLESS_MODEL` added to the git-ignored `.env`
+  (not source — CLAUDE.md rule 1).
+- `openai>=1.40` added to `pyproject.toml` deps (installed 3.6.0); `uv lock`
+  regenerated.
+- `warm_up()` unchanged — still Ollama-only (Featherless is hosted, no
+  cold-load); docstring/log now say so.
+
+**Tests** — `tests/test_risk_officer.py` 23 → **36**: autouse fixture keeps them
+fully offline (no real `.env`, no real key); `FakeFeatherless` exposes
+`.chat.completions.create`. New coverage: Featherless primary (used; Ollama
+untouched; client built from key), Featherless→Ollama fallback (connection /
+timeout / auth / malformed / unparseable / empty / no-choices), no-key →
+Ollama primary, **both fail → VETO**, one identical prompt across providers,
+fallback + both-failed logging. Suite **139**.
+
+Live check: `-m trading_agent.risk_officer` → real `VERDICT` via
+`featherless:Qwen/Qwen2.5-7B-Instruct`; with a bogus key → `featherless FAILED
+(AuthenticationError 401) -> falling back to ollama` → real verdict via
+`ollama:llama3.2`.
+
+## 2026-08-31 — `risk_officer` timeout bump + `warm_up()`
+
+`llama3.2` (3.2B, ~2 GB) pulled locally. First live `review_trade()` after the
+model idled out timed out at 60 s (cold disk load) -> fail-safe VETO. Two fixes:
+
+- `DEFAULT_TIMEOUT` 60 -> **120 s** (`OLLAMA_TIMEOUT`); new `WARM_UP_TIMEOUT`
+  180 s (`OLLAMA_WARM_UP_TIMEOUT`).
+- New `warm_up(*, host=, model=, timeout=, session=) -> bool` — fires a throwaway
+  one-token `/api/generate` (`options={"num_predict": 1}`) to force the model
+  resident. Never raises; returns `False` if Ollama is down at startup (the
+  in-loop review still fails safe). `main.py` will call it once before the loop.
+  The `__main__` demo now calls it first.
+
+**Tests** — `tests/test_risk_officer.py` +4 (23 total): one-token request shape,
+False-without-raising on connection error / HTTP 404, outcome logging. Suite
+**126**.
+
+Live check: model unloaded (`keep_alive:0`), then `-m trading_agent.risk_officer`
+-> `warm-up OK: model resident` -> real parsed `VERDICT: APPROVE` / `VETO` (no
+fail-safe).
+
+## 2026-08-31 — `risk_officer.py` (LLM second-opinion gate)
+
+New module. Runs **after** `risk_manager.check_order()` approves — an extra
+judgment layer, never a replacement.
+
+- `review_trade(order, snapshot, account, *, host=, model=, timeout=, session=)`
+  -> `OfficerReview(approved, thesis, model, ok, raw_response, error)`.
+- Builds a prompt from the IV regime, ATM IV, realized vol, IV-RV spread, and
+  current exposure (order max-loss %, open positions, day P&L, drawdown), POSTs
+  to local Ollama `/api/generate` (`stream: false`), parses
+  `VERDICT: APPROVE|VETO` + `THESIS:` via `parse_review()`.
+- **Fail-safe**: transport error / HTTP error / bad JSON / missing VERDICT ->
+  `approved=False, ok=False`. A broken reasoning step never green-lights a trade.
+- Logs the prompt, the raw response, and every failure (evidence trail for the
+  write-up). `OfficerReview.describe()` marks fail-safe vetoes.
+- Config via env: `OLLAMA_HOST` / `OLLAMA_MODEL` (`llama3.2`) / `OLLAMA_TIMEOUT`.
+- Added `requests>=2.31` to `pyproject.toml` deps.
+- Not wired into `executor.py` yet.
+
+**Tests** — `tests/test_risk_officer.py` (19), fully mocked Ollama: verdict
+parsing (several forms + thesis fallback), fail-safe on unparseable / empty /
+connection-refused / timeout / HTTP 500 / bad JSON, prompt content + missing
+fields, logging on success/failure/unparseable. Suite **122**.
+
+Live check: Ollama is up (v0.33.2) but `/api/tags` -> `{"models":[]}`, so
+`-m trading_agent.risk_officer` correctly fail-safe VETOs (404 from
+`/api/generate` for an unpulled model). `ollama pull llama3.2` for real verdicts.
+
 ## 2026-08-31 — Migrated into `C:\alpaca-hackathon\trading-agent` (git, src layout)
 
 Consolidated the project out of the spaced path

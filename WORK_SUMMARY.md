@@ -11,9 +11,10 @@ agent. Companion to `PROJECT_STATE.md` (current architecture) and `DEVLOG.md`
 ## 1. Executive summary
 
 A **market-data layer**, an **iron-condor builder**, a **pre-trade risk
-manager**, and a **gated order executor** for a SPY adaptive options agent are
-built and tested (the data path is also verified live against the Alpaca paper
-account):
+manager**, a **gated order executor**, an **LLM second-opinion gate**, and the
+**autonomous loop** that drives them for a SPY adaptive options agent are built
+and tested — **175 offline tests** (the data path, the LLM providers, and the
+agent startup are also verified live against the Alpaca paper account):
 
 - **`alpaca_trader.py`** — low-level Alpaca access: credentials, spot price,
   option-chain fetch with expiry/strike filters, OCC symbol parsing, a 20–30
@@ -30,16 +31,29 @@ account):
   halt, 5% total-drawdown floor (+ sticky halt), max 3 concurrent positions,
   defined-risk leg-match invariant, and a ≤1-session-to-expiry force-close flag.
   Pure/deterministic; decides only, never trades.
+- **`risk_officer.py`** — LLM second opinion. After `check_order()` approves,
+  asks an LLM to APPROVE/VETO with a 2-3 sentence thesis on the IV regime, IV-RV
+  spread, and exposure. **Featherless AI** (hosted, primary) with **local Ollama**
+  as an automatic fallback on any Featherless failure; same prompt + parser for
+  both. Parses `VERDICT:` + `THESIS:` into `(approved, thesis, provider)`.
+  **Fails safe to VETO only if both providers fail**; logs the prompt, provider,
+  raw response, and failures as an evidence trail.
 - **`executor.py`** — `submit_iron_condor()` runs `check_order()` first and
   **sends nothing** unless approved (no bypass parameter). Approved orders go out
   as one `OrderClass.MLEG` limit order with the four OCC legs. Every attempt logs
   the full `RiskDecision.describe()`.
+- **`main.py`** — the autonomous loop. Every 15 min in market hours: refresh
+  snapshot + `AccountState` (persisted `starting_equity`), **manage open
+  positions first** (50% profit target / 2× stop / expiry close), latch the
+  sticky halt, then run **strategy → risk_manager → risk_officer → executor in
+  that exact order** if there's room and no halt. Logs a `DecisionSummary` every
+  cycle; each cycle is isolated by try/except; daily copy-paste recap at 4 pm ET.
 
 Per-trade risk is **1.5% everywhere**: `risk_manager.MAX_RISK_PER_TRADE_PCT` is
 the single source of truth, `strategy.py` imports it, and `CLAUDE.md` rule 2 says
-1.5% ($1,500). `executor.submit_iron_condor()` is the only caller of
-`check_order()`; nothing drives it yet (no loop assembling `AccountState`), and
-it has not run against the live API.
+1.5% ($1,500). `main.py` drives the full pipeline; `startup()` + `get_clock()`
+are verified against the paper account, but no live `run_cycle()` has run yet
+(it would place a real paper order).
 
 ---
 
@@ -196,6 +210,84 @@ and the MLEG request a sane order would send. Never submits.
 Not done: not run against the live API; no fill polling, re-price, or cancel; the
 MLEG `limit_price` is the mid-based net credit with no working/marketable logic.
 
+### 3.7 `risk_officer.py` — LLM second-opinion gate
+
+Runs **after** `risk_manager.check_order()` approves — an additional judgment
+layer, not a replacement. Two LLM providers, tried in order; decides nothing on
+its own beyond parsing the reply.
+
+**Providers:**
+1. **Featherless AI** (primary) — hosted, OpenAI-compatible, via the `openai`
+   package: `OpenAI(base_url, api_key, max_retries=0, timeout=45)` →
+   `chat.completions.create(model, messages=[{role:"user", content:prompt}])`,
+   raw text from `choices[0].message.content`. Skipped if no `FEATHERLESS_API_KEY`.
+2. **Ollama** (fallback) — local `POST /api/generate`. Runs automatically on
+   **any** Featherless failure: connection error, timeout, auth/API error, no
+   choices, empty content, or an unparseable (`VERDICT`-less) reply.
+
+| Function / model | Purpose |
+|---|---|
+| `review_trade(order, snapshot, account, *, featherless_api_key=None, featherless_model=None, featherless_base_url=None, featherless_client=None, host=None, model=None, timeout=None, session=None)` → `OfficerReview` | Builds one prompt, tries Featherless then Ollama, parses whichever answers. **Fail-safe VETO only if both fail** (`approved=False, ok=False, provider="none"`). `featherless_client=` and `session=` are test seams. |
+| `build_prompt(order, snapshot, account)` | Pure. Lays out the trade, the volatility backdrop (ATM IV, realized vol, **IV-RV spread**, IV regime + reason), and current exposure (max-loss % of equity, open positions, day P&L, drawdown). Asks for `VERDICT: APPROVE\|VETO` + `THESIS: <2-3 sentences>`. Tolerates missing snapshot keys. **One prompt, both providers.** |
+| `parse_review(text, model)` → `OfficerReview` | Pure. Regex `VERDICT\s*[:\-]\s*(APPROVE\|VETO)` (case-insensitive), thesis from a `THESIS:` label or the text after the verdict; whitespace-collapsed, capped at 800 chars. No match → fail-safe VETO. **Shared by both providers.** |
+| `OfficerReview` | `approved`, `thesis`, `model`, `ok` (False ⇒ fail-safe), `raw_response`, `error`, `provider` (`"featherless"`/`"ollama"`/`"none"`); `.describe()` shows the provider and marks fail-safe vetoes. |
+| `warm_up(*, host=None, model=None, timeout=None, session=None)` → `bool` | Fires a throwaway one-token `/api/generate` (`options={"num_predict": 1}`) to force the **Ollama** model resident before the loop (Featherless is hosted, no cold-load). Never raises — returns `False` if Ollama is down at startup. `main.py` calls it once. |
+
+**Logging (evidence trail):** the prompt + provider at INFO; on success the
+verbatim raw response + parsed thesis; `"featherless FAILED … -> falling back to
+ollama"` at WARNING; unparseable replies at WARNING with the raw text;
+`"NO PROVIDER SUCCEEDED -> VETO"` at ERROR with both providers' failure detail;
+warm-up outcome at INFO / WARNING.
+
+Config via env (auto-loaded from `.env`): `FEATHERLESS_API_KEY`,
+`FEATHERLESS_MODEL` (`Qwen/Qwen2.5-7B-Instruct` — mid-size, non-gated, 32k ctx,
+free tier), `FEATHERLESS_BASE_URL` (`https://api.featherless.ai/v1`),
+`FEATHERLESS_TIMEOUT` (`45`); `OLLAMA_HOST` (`http://localhost:11434`),
+`OLLAMA_MODEL` (`llama3.2`), `OLLAMA_TIMEOUT` (`120`), `OLLAMA_WARM_UP_TIMEOUT`
+(`180`). The Featherless key lives only in the git-ignored `.env`.
+
+**Run:** `python -m trading_agent.risk_officer` → `warm_up()` then a real call.
+Verified end to end: real `VERDICT` via `featherless:Qwen/Qwen2.5-7B-Instruct`;
+with a bogus key → `featherless FAILED (401) -> falling back to ollama` → real
+verdict via `ollama:llama3.2`.
+
+`main.py` calls `warm_up()` at startup and `review_trade(..., timeout=45)` in the
+pipeline.
+
+---
+
+### 3.8 `main.py` — the autonomous loop
+
+`run_forever(Config.from_env())` — or the `trading-agent` console script — runs
+one `run_cycle()` every `AGENT_LOOP_INTERVAL_SECONDS` (default 900), **only while
+`TradingClient.get_clock().is_open`**.
+
+| Function / model | Purpose |
+|---|---|
+| `startup(config)` | First run: fetch REAL equity from Alpaca, persist as `starting_equity` in `session.json`. Restart: load it, **never re-derive** (would corrupt the 5% floor). Then `risk_officer.warm_up()` + startup log (ts, account id, equities). |
+| `run_cycle(conn, session, config)` | Snapshot + `AccountState` → manage positions → sticky-halt latch → `evaluate_cycle_decision()` → log `DecisionSummary` → persist `session.json`. |
+| `decide_exit(valuation, *, is_expiring, ...)` | Pure. Close reason in the spec's order: **profit-target** (≥ 50% of entry credit captured) → **stop-loss** (loss ≥ 2× entry credit) → **expiry**. First match wins. Thresholds are config. |
+| `value_condor(legs, mid_by_symbol)` | Pure. Net mid $ to buy the structure back (pay for legs sold, receive for legs bought). `None` if a leg has no quote. |
+| `manage_open_positions(session, valuations, expiring_ids, *, close_fn, ...)` | Closes every triggered condor via `close_fn`, records a history event with realized P&L, drops it from `session.open_condors`. A `close_fn` exception keeps the position. |
+| `halt_status(account)` / `update_sticky_halt(session, account)` | Same thresholds as `risk_manager`, vs **persisted** `starting_equity`. The 5% breach latches `session.trading_halted = True` permanently. |
+| `evaluate_new_trade(snapshot, account, *, config, plan_fn=, to_order_fn=, check_fn=, review_fn=, submit_fn=, call_log=)` | Runs **strategy → risk_manager → risk_officer (45 s) → executor in that exact order**; a rejection at any stage returns immediately and later stages never run. `executor.submit_iron_condor()` re-runs `check_order()` internally. All stages injectable for tests. |
+| `evaluate_cycle_decision(...)` | Capacity (< 3) + halt prechecks, then `evaluate_new_trade`. Always returns a `DecisionSummary` (`Skipped`/`Halted`/`Blocked`/`Vetoed`/`Executed`/`Error`). |
+| `daily_summary_text(session, *, current_equity, day_start_equity, et_date)` | Copy-paste-ready recap: equity, day P&L, trades opened/closed today, open book, hashtags. Emitted at/after 16:00 ET, once per ET day. |
+
+**Resilience:** every cycle is wrapped in try/except — one bad cycle logs and the
+loop continues, never crashes. Logs to console **and** `logs/agent.log` (both
+UTF-8; stdout reconfigured so Windows cp1252 doesn't mangle output).
+
+**Config — env vars, nothing hardcoded:** `AGENT_LOOP_INTERVAL_SECONDS`,
+`AGENT_LOG_LEVEL`, `AGENT_ENV_FILE` (loaded first, wins), `AGENT_SESSION_FILE`,
+`AGENT_LOG_FILE`, `AGENT_REVIEW_TIMEOUT_SECONDS` (45), `AGENT_PROFIT_TARGET_FRACTION`
+(0.50), `AGENT_STOP_LOSS_MULTIPLE` (2.0). `session.json` / `logs/` are git-ignored.
+
+**Run:** `python -m trading_agent.main` (or `trading-agent`). Verified live:
+`startup()` created `session.json` (starting_equity $100,000, account
+`PA3ARUWVYYGH`), `warm_up()` OK, `get_clock()` → `is_open=True`. No live
+`run_cycle()` executed (it would place a real paper MLEG order).
+
 ---
 
 ## 4. Consolidation (two files → two clean layers)
@@ -226,11 +318,22 @@ At the same time, `data.py`'s chain pull was narrowed from the full chain to
   2026-08-31 from `C:\alpaca options ai agent\alpaca-hackathon` (flat, no git).
 - **`.venv/`** — Python **3.12** (pinned in `pyproject.toml` as `>=3.12,<3.13`;
   alpaca-py's deps lacked 3.14 wheels). `uv venv --python 3.12 && uv pip install -e ".[dev]"`.
-- **Dependencies** (`pyproject.toml`): `alpaca-py` 0.44.0, `numpy`, `pandas`,
-  `pandas-market-calendars` 5.4.0 (NYSE holiday calendar), `python-dotenv`;
-  `[dev]` adds `pytest`.
-- **Credentials**: repo-root `.env` (git-ignored), auto-discovered by
-  `load_credentials()` (cwd, then repo root). Paper trading.
+- **Dependencies** (`pyproject.toml`): `alpaca-py` 0.44.0, `numpy`, `openai`
+  (3.6.0; Featherless client), `pandas`, `pandas-market-calendars` 5.4.0 (NYSE
+  holiday calendar), `python-dotenv`, `requests`, `tzdata` (ET clock on Windows);
+  `[dev]` adds `pytest`. `uv.lock` regenerated after each dep change.
+- **`risk_officer.py` LLM providers**: **Featherless AI** (primary, hosted,
+  `https://api.featherless.ai/v1`, `Qwen/Qwen2.5-7B-Instruct`) and **local
+  Ollama** (`http://localhost:11434`, v0.33.2, `llama3.2:latest` 3.2B ~2 GB) as
+  the automatic fallback — both verified.
+- **Credentials & keys**: repo-root `.env` (git-ignored), auto-discovered (cwd,
+  then repo root; or `AGENT_ENV_FILE` for an explicit path) — `ALPACA_*` plus
+  `FEATHERLESS_API_KEY` / `FEATHERLESS_MODEL`. No key is hardcoded in source.
+  Paper trading.
+- **`main.py` runtime state** (git-ignored): `session.json` (persisted
+  `starting_equity`, sticky halt, tracked condors, event history) and
+  `logs/agent.log`. Tunables via `AGENT_*` env vars (loop interval, log level,
+  env file, session/log paths, review timeout, profit-target / stop-loss).
 - **Data feed**: **indicative** only. The paper account has no signed OPRA
   agreement, so `--feed opra` / the default OPRA feed returns
   `"OPRA agreement is not signed"`. Indicative still returns quotes, Greeks, IV.
@@ -241,8 +344,8 @@ At the same time, `data.py`'s chain pull was narrowed from the full chain to
 
 ## 6. Tests
 
-`pytest tests/` → **103 tests, all passing, fully offline** (no network / no API
-keys — the market calendar ships its data):
+`pytest tests/` → **175 tests, all passing, fully offline** (no network / no API
+keys — the market calendar ships its data; both LLM providers and Alpaca are mocked):
 
 - **`test_alpaca_trader.py` (25)** — `next_friday`; `nth_trading_day` (10 cases
   incl. Labor Day / Thanksgiving / Christmas + a non-positive-`n` guard);
@@ -270,6 +373,31 @@ keys — the market calendar ships its data):
   raised; approved-but-unbuildable (missing symbol) not sent; signature has no
   bypass param and `check_order` is always called; `IronCondorPlan` → order
   round-trips through `submit`.
+- **`test_risk_officer.py` (36)** — mocked `FakeFeatherless` (OpenAI-compatible)
+  + mocked Ollama `session`, kept offline by an autouse fixture. `parse_review`
+  verdict forms incl. Featherless trailing-space style; **Featherless primary**
+  (APPROVE / VETO used, Ollama untouched, client built from key); **Featherless →
+  Ollama fallback** on `ConnectionError` / `Timeout` / auth error / malformed /
+  unparseable / empty content / no choices; **no key → Ollama is primary**;
+  **both providers fail → fail-safe VETO** (`provider="none"`, `error` names
+  both, last raw body kept); the prompt is identical across both providers and
+  survives missing snapshot keys; prompt / provider / fallback / both-failed all
+  logged; `warm_up()` one-token request, `True`/`False` without raising, logs
+  the outcome.
+- **`test_main.py` (36)** — **position management**: `value_condor` net-mid /
+  missing-leg → `None`; `decide_exit` profit-target (fires at *exactly* 50%),
+  stop-loss (fires at *exactly* 2× credit lost), expiry-when-flagged,
+  none-when-healthy, profit & stop each beat expiry when both true, configurable
+  thresholds; `manage_open_positions` closes only triggered condors, records
+  history + realized P&L, and **keeps the position if `close_fn` raises**.
+  **Gate sequencing** (spies record every call): full approval →
+  `strategy → to_order → risk_manager → risk_officer → executor` in that exact
+  order; rejection at strategy / risk_manager / risk_officer each stops before
+  every later stage; executor non-submission → `error`; `review_fn` receives the
+  45 s timeout; halt / capacity prechecks skip the pipeline entirely (no spy
+  calls). Plus session persistence (`starting_equity` seeded from live equity
+  once, kept verbatim on restart even after a drawdown), sticky-halt latch,
+  `reconcile_account_state`, `daily_summary_text`, `DecisionSummary.render`.
 
 ---
 
@@ -292,33 +420,41 @@ keys — the market calendar ships its data):
    noisy window. `MIN_IV_RV_SPREAD = 0.02` is a starting assumption to tune.
 6. **`data.py`'s returned `chain` is ±5% / near-dated only.** If `strategy.py`
    needs wider strikes or further-dated expiries, widen the constants.
-7. **Nothing drives `executor.py` yet.** `submit_iron_condor()` is the sole
-   caller of `check_order()`, but no loop assembles `AccountState` (equity marks,
-   open positions, sticky `trading_halted`) or calls the executor. Not run
-   against the live API.
+7. **`main.py` has not run a live cycle.** `startup()` + `get_clock()` are
+   verified against the paper account; no `run_cycle()` has executed live (it
+   would place a real paper MLEG order). Position P&L is a mid-price re-quote via
+   `value_condor()` (a leg with no quote → that condor skipped for the cycle,
+   logged); no use of Alpaca's own `unrealized_pl`, no slippage model on close.
+   Condor↔order reconciliation is by our own tracking id in `session.json` — a
+   partial fill or a manual close in the Alpaca UI is not reconciled back.
 8. **`risk_manager` gate 5 checks quantity match only**, not that strikes
    actually bracket (a "long" far ITM would still pass). Fine for condors built
    by `strategy.py`; tighten if orders can come from elsewhere.
 9. **`executor.py` has no order lifecycle.** MLEG `limit_price` is the mid-based
    net credit rounded to $0.01; no fill polling, re-price, working-order, or
    cancel logic if it sits unfilled.
+10. **`risk_officer` model output is untrusted free text** — only the
+    `VERDICT`/`THESIS` shape is parsed, and a VETO can never be overridden by a
+    malformed reply. Featherless (`Qwen/Qwen2.5-7B-Instruct`) is primary, Ollama
+    (`llama3.2`) the fallback; both verified live plus the 401→fallback and
+    both-down→VETO paths. The Ollama fallback's first call after the model idles
+    out cold-loads ~2 GB; `main.py` calls `warm_up()` at startup to absorb that.
 
 ---
 
 ## 8. Not started
 
-- **Runtime glue** — a loop that assembles `AccountState` (live equity marks,
-  open positions, sticky halt), calls `strategy.build_iron_condor()` →
-  `executor.from_iron_condor_plan()` → `executor.submit_iron_condor()`, and runs
-  `flag_expiring_positions()` on the open book.
-- **Order lifecycle in `executor.py`** — fill polling, re-price / working orders,
-  cancel; closing legs for flagged positions.
-- **`agent.py`** — LangGraph orchestration / main loop.
+- **First live `run_cycle()`** — `main.py` startup is verified against the paper
+  account; running a real cycle would place a real paper MLEG order.
+- **Order lifecycle** — fill polling, re-price / working orders, partial-fill and
+  manual-close reconciliation back into `session.json`.
+- **Scheduler** — `main.py` runs its own `time.sleep` loop; no OS-level
+  cron/service wrapper or restart-on-crash supervision.
 - **Scheduled daily `log_daily_iv()`** so IV history accumulates and the gate can
   graduate from Hackathon Mode to percentile mode.
 - **Pin `get_atm_iv()` to the front expiry** (see limitation 1).
-- **Position management** — profit-taking / stop / roll / expiry handling for
-  open condors.
+- **Rolling** — `main.py` closes on the triggers; it does not roll a tested
+  position out to a new expiry.
 
 ---
 
@@ -329,17 +465,23 @@ Repo root: `C:\alpaca-hackathon\trading-agent`.
 | Path | Role |
 |---|---|
 | `CLAUDE.md` | System instructions + safety rules |
-| `pyproject.toml` | Package + deps (`[dev]` = pytest); `requires-python >=3.12,<3.13` |
+| `pyproject.toml` | Package + deps (incl. `openai`, `tzdata`; `[dev]` = pytest); `requires-python >=3.12,<3.13` |
+| `.env` | git-ignored — `ALPACA_*`, `FEATHERLESS_API_KEY`, `FEATHERLESS_MODEL` |
 | `src/trading_agent/alpaca_trader.py` | Low-level Alpaca data layer + delta/spread CLI |
 | `src/trading_agent/data.py` | Strategy-facing market-data layer + IV-regime gate (`get_market_snapshot()`) |
 | `src/trading_agent/strategy.py` | Iron condor builder (`build_iron_condor()` → `IronCondorPlan`) |
 | `src/trading_agent/risk_manager.py` | Pre-trade gates (`check_order()` → `RiskDecision`) + expiry monitor |
+| `src/trading_agent/risk_officer.py` | LLM second opinion — Featherless primary + Ollama fallback (`review_trade()` → `OfficerReview`, `warm_up()`); fail-safe VETO only if both fail |
 | `src/trading_agent/executor.py` | Gated MLEG submission (`submit_iron_condor()` → `ExecutionResult`) |
+| `src/trading_agent/main.py` | **Autonomous loop** — startup/session, position management, strict gate sequencing, per-cycle resilience, daily summary (`run_forever()` / `trading-agent`) |
 | `tests/test_alpaca_trader.py` | 25 offline unit tests |
 | `tests/test_data.py` | 15 offline tests — IV percentile, regime gate, realized vol |
 | `tests/test_strategy.py` | 14 offline tests — condor construction + IV−RV gate |
 | `tests/test_risk_manager.py` | 31 offline tests — the six risk gates + edge cases |
 | `tests/test_executor.py` | 18 offline tests — gate-before-submit, MLEG build, logging |
+| `tests/test_risk_officer.py` | 36 offline tests — mocked Featherless + Ollama, both providers, fallback path, both-fail VETO, warm-up |
+| `tests/test_main.py` | 36 offline tests — position-management triggers + strict gate sequencing + session persistence + daily summary |
+| `session.json` / `logs/agent.log` | git-ignored — `main.py` runtime state + log |
 | `iv_history.csv` | Generated — daily ATM IV log |
 | `PROJECT_STATE.md` | Current architecture status |
 | `DEVLOG.md` | Dated change log |

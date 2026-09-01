@@ -1,5 +1,110 @@
 # Dev Log
 
+## 2026-09-01 — Quantamental upgrade (4 modules, 4 commits)
+
+Built on the Contextual Intelligence layer below. **The 1.5% per-trade cap is
+still the sole source of truth**; the modular flow is intact. Dep added:
+**yfinance** (+ its transitive deps). 278 → **306 tests**.
+
+**1. IntelligenceHub (`intelligence_hub.py`).** yfinance-primary context: ^VIX +
+^VIX3M **term structure** (ratio > 1.0 = backwardation → `PANIC_REGIME`),
+`.news`, closes for RSI. Pipe-by-pipe fallback to the Alpaca fetchers in
+`context_gatherer`, then `MarketContext.unavailable()`. `MarketContext` gained
+`vix` / `vxv` / `vix_vxv_ratio` / `panic_regime` / `macro_danger`
+(High-Impact event within 48h) + `regime_flags()`. `main._gather_market_context`
+now calls it; a set flag logs `REGIME SIGNALS`.
+
+**2. Quant strategy (`strategy.py`).** *Relative-value optimiser* —
+`rank_basket(symbols, snapshots, context)` orders the basket by IV-RV spread,
+news score as tiebreak; `run_cycle` evaluates in that order. *Dynamic delta
+scaling* — `dynamic_short_delta(atm_iv)`: 0.10 at/below 15% IV, 0.30 at/above
+30%, unchanged 0.225 in between; condor / vertical short legs use it only when it
+actually deviates. *Regime override* — `select_regime(snapshot, *, context=)`:
+`MACRO_DANGER` / `PANIC_REGIME` vetoes any short-vol selection and forces a long
+strangle (a quant "No trade" is left alone). `select_regime` body moved into
+`_quant_regime`.
+
+**3. Multi-agent debate (`risk_officer.py`).** `debate_review()` — a **Bull**
+argues for, a **Bear** against (no verdict), then a **Judge** (both cases +
+MarketContext + risk_manager numbers + lessons) returns APPROVE/VETO. Same
+drop-in contract as `review_trade` (which is unchanged and still handles every
+non-top candidate). Failed advocate → "(unavailable)"; Judge down on both
+providers → fail-safe VETO. Transcript on `OfficerReview.debate` /
+`.transcript()`; `DecisionSummary.debate` carries it; `run_cycle` runs the debate
+**only for the #1-ranked ticker** (`AGENT_DEBATE`, default on) and logs a
+`DEBATE [SYM]` block. `build_prompt` gained optional `bull_case` / `bear_case` /
+`lessons` → `### DEBATE` / `### LESSONS LEARNED` sections.
+
+**4. Self-correction (`risk_officer.py`).** `post_trade_analysis(closed_event)` —
+after a close, one LLM call turns exit reason + P&L + price action into a
+`LESSON: …` line, appended (atomic, last 50) to `lessons_learned.json`.
+`load_lessons()` (cap 12) feeds every future judge prompt. `run_cycle` runs it on
+each close (`AGENT_SELF_CORRECTION`, default on). Best-effort — any failure
+writes nothing and never blocks the loop.
+
+New env: `AGENT_DEBATE`, `AGENT_SELF_CORRECTION`. New git-ignored runtime file:
+`lessons_learned.json`.
+
+
+## 2026-09-01 — Contextual Intelligence & Macro-Filter layer
+
+Bolted a context layer onto the quantitative pipeline: macro-event guard, a VIX
+proxy, ticker news, and market internals (RSI) — synthesised into one string that
+the risk_officer sees and the daily audit log records. **No change to the 1.5%
+cap. No new dependency** (numpy for RSI; Alpaca News API + VIXY via the existing
+`alpaca-py`; macro dates are a bundled static schedule).
+
+**1. `context_gatherer.py` (new).**
+* `wilder_rsi(closes, 14)` + `classify_rsi` — pure numpy; 100 on a pure rally, 0
+  on a pure selloff, 50 flat, None if < 15 closes.
+* `HIGH_IMPACT_CALENDAR` — bundled 2026 FOMC decisions + CPI releases + monthly
+  NFP (first-Friday). `upcoming_high_impact(now, 48h)` / `high_impact_today(now)`;
+  `calendar=` is injectable for a live feed later.
+* `fetch_vix_proxy` — VIXY latest trade + ~5-session % change; `+/-10%` over 5d
+  flags "possibly spiking" / "falling". (^VIX isn't on Alpaca's feed.)
+* `fetch_headlines` — top 4 recent headlines/ticker via the Alpaca News API,
+  de-duped, long wire-dumps truncated to 180 chars.
+* `score_headlines` — crude keyword net sentiment, used only as a tiebreak.
+* `MarketContext.synthesis()` — `Macro: … | VIX: … | News SYM: … | RSI SYM: … | …`
+  on one line; `MarketContext.unavailable()` → `"No Context Available"` and
+  `macro_today_high_impact = False` (fail-safe: never trips the guard).
+* `gather_context()` — orchestrator; every sub-pull degrades independently, a
+  total wipe-out returns `unavailable`, nothing raises into the loop.
+* `prioritize(symbols, snapshots, context)` — orders eligible tickers by IV-RV
+  spread desc, news score as the tiebreak.
+
+**2. `main.py` integration.**
+`run_cycle` now: (0) `gather_context` first thing, logs the synthesis to
+`agent_activity.log` (`MARKET CONTEXT` block); (0b) `macro_risk_multiplier` — a
+High-Impact day sets `AccountState.risk_multiplier = 0.5` for the whole cycle and
+logs `MACRO GUARD ACTIVE`; (3) pre-fetches every ticker snapshot then evaluates
+in `prioritize()` order under the shared 3-cap. `DecisionSummary` gained
+`market_context`; it's threaded through `evaluate_cycle_decision` /
+`evaluate_new_trade` into the risk_officer's `review_snapshot` and stamped on
+every summary. `reconcile_account_state` gained `risk_multiplier=`.
+
+**3. `risk_manager.py` (surgical).** `AccountState.risk_multiplier: float = 1.0`;
+gate 1's effective cap is `1.5% * equity * min(risk_multiplier, 1.0)` — a
+multiplier can only *tighten*, never raise the ceiling, and `MAX_RISK_PER_TRADE_PCT`
+is byte-for-byte unchanged. New `is_macro_safe(macro_high_impact=)` /
+`macro_risk_multiplier(macro_high_impact=)` (→ 0.5 on a High-Impact day).
+
+**4. `risk_officer.py`.** `build_prompt` gained a `### MACRO CONTEXT` block
+carrying the synthesis string (or `No Context Available`), with the standing
+instruction: analyse Macro + VIX, VETO / add scrutiny to short-vol trades when VIX
+is spiking or a Red-Folder event is imminent, and use RSI to check overbought /
+oversold before approving a directional credit spread.
+
+**Tests** — +28 (250 → **278**). New `test_context_gatherer.py` (19): RSI bands,
+48h calendar window + today flag, sentiment score, synthesis format, partial-vs-
+total failure degradation, `prioritize` ordering. `test_risk_manager.py` +5
+(macro predicate / multiplier / halved cap / constant untouched / clamp > 1.0).
+`test_risk_officer.py` +2 (MACRO CONTEXT section + fail-safe). `test_main.py` +3
+(context logged, priority order + macro multiplier threaded, context failure
+non-fatal); the multi-ticker `run_cycle` tests now stub `_gather_market_context`
+to stay offline.
+
+
 ## 2026-09-01 — Off-Hours Intelligence (Heartbeat / Morning Brief / Post-Mortem)
 
 Added a "genuine autonomy" layer that runs *around* the 15-min trading loop, not

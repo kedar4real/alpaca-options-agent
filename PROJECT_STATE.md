@@ -41,12 +41,25 @@ strategy.py  (regime-aware structure builder — proposes, does not place orders
   build_strategy_plan(snapshot) -> IronCondorPlan   (logs "REGIME [SYM]: ...")
         |  its proposal is vetted by
         v
+context_gatherer.py  (Contextual Intelligence & Macro-Filter — reads, never trades)
+  gather_context(creds, tickers) -> MarketContext  (fail-safe; never raises)
+    * macro guard   HIGH_IMPACT_CALENDAR (2026 FOMC/CPI/NFP): upcoming 48h + today
+    * vol surface   fetch_vix_proxy()  VIXY level + 5d % change (^VIX not on feed)
+    * news          fetch_headlines()  top 4/ticker via Alpaca News API
+    * internals     wilder_rsi(closes, 14) per ticker  (pure numpy)
+  MarketContext.synthesis() -> "Macro: … | VIX: … | News SYM: … | RSI SYM: … | …"
+    .unavailable() -> "No Context Available", macro_today_high_impact = False
+  prioritize(tickers, snapshots, ctx) -> best IV-RV spread first, news score ties
+        |  its synthesis string + macro flag feed
+        v
 risk_manager.py  (pre-trade gates + expiry monitor — decides, never trades)
   check_order(order, account) -> RiskDecision   (gates 1-5, collects all fails)
-    1 max risk/trade <= 1.5% current equity  (uses ProposedOrder.max_loss when set)
+    1 max risk/trade <= 1.5% current equity  (uses ProposedOrder.max_loss when set;
+      x AccountState.risk_multiplier, clamped <=1.0 — macro guard halves it)
     2 daily loss halt 2.5% starting   3 total drawdown floor 5% starting (+ sticky)
     4 max 3 positions (GLOBAL across the basket)
     5 defined-risk: matched long/short per right  OR  all-long (long strangle)
+  is_macro_safe() / macro_risk_multiplier()  (0.5 on a High-Impact macro day)
   flag_expiring_positions() / trading_days_until()  (gate 6: <=1 session to expiry)
         |  imported by
         v
@@ -73,17 +86,22 @@ main.py  (autonomous loop — every AGENT_LOOP_INTERVAL_SECONDS, market hours on
   startup(): session.json (persist REAL starting_equity, never re-derived) +
              risk_officer.warm_up() + log account id / equity / basket
   run_cycle():
-    1. live AccountState (persisted starting_equity) — GLOBAL across the basket
+    0. context_gatherer.gather_context() FIRST -> synthesis logged to
+       agent_activity.log; macro_risk_multiplier() -> AccountState.risk_multiplier
+       (0.5 on a High-Impact macro day; logs MACRO GUARD ACTIVE)
+    1. live AccountState (persisted starting_equity, macro multiplier) — GLOBAL
     2. manage_open_positions() FIRST across all tickers — decide_exit():
        credit: +50% / -2x credit ; debit (strangle): +50% / -50% of premium ;
        expiry (flag_expiring_positions); close via Alpaca
     3. update_sticky_halt() + halt_status() precheck (daily / total drawdown)
-    4. FOR EACH ticker in AGENT_TICKERS (SPY,QQQ,IWM,TLT):
-         get_market_snapshot(sym) -> evaluate_cycle_decision():
+    4. pre-fetch every AGENT_TICKERS (SPY,QQQ,IWM,TLT) snapshot, then
+       context_gatherer.prioritize() -> evaluate best IV-RV spread first:
+         evaluate_cycle_decision(market_context=synthesis):
            capacity(<3 global) + halt prechecks, then
            strategy(regime switch) -> risk_manager -> risk_officer(45s) -> executor
          rebuild account after each open so the 3-cap stays global
-    5. log one DecisionSummary per ticker (Skipped/Halted/Blocked/Vetoed/Executed)
+    5. log one DecisionSummary per ticker (Skipped/Halted/Blocked/Vetoed/Executed);
+       each carries the market_context synthesis string
   try/except per ticker + per cycle; console + logs/agent.log
   daily_summary_text() at >= 4pm ET — copy-paste-ready recap (per ticker/structure)
         |  observability wrapped around it (never blocks a cycle)
@@ -104,11 +122,13 @@ offhours.py  (Off-Hours Intelligence — pure renderers; main.py time-gates them
 | Low-level Alpaca data layer | `alpaca_trader.py` | **Working** (live paper API); `fetch_option_chain(underlying=)` per ticker |
 | Strategy-facing market data | `data.py` | **Working** (live); `get_market_snapshot(symbol)` per basket ticker |
 | IV history / percentile / regime gate | `data.py` + `iv_history.csv` | Live; one shared file `timestamp,symbol,iv,rv,spread`, appended per ticker/cycle; Hackathon Mode static gate until >= 10 daily rows per symbol |
-| Regime-aware strategy | `strategy.py` | **Working** (32 offline tests); regime switch A→condor / B→long strangle / C→bull-put·bear-call, verified live (TLT→strangle). Proposes only |
-| Pre-trade risk gates + expiry monitor | `risk_manager.py` | **Working** (38 offline tests); decides only. Gate 5 recognises all-long (strangle) as defined-risk; gate 1 uses `ProposedOrder.max_loss` — **limit values unchanged** |
-| LLM second-opinion gate | `risk_officer.py` | **Working** (36 offline tests); fail-safe VETO. **Featherless AI** (`Qwen/Qwen2.5-7B-Instruct`) primary, **Ollama** (`llama3.2`) auto-fallback. Prompt carries the regime + structure |
-| Broker submission (MLEG) | `executor.py` | **Working** (23 offline tests); 2- or 4-leg MLEG; gate-checked, never bypassable. Not yet exercised against the live API |
-| Autonomous loop / driver | `main.py` | **Working** (52 offline tests); startup + clock + multi-ticker regime detection verified live. Basket loop with a global 3-position cap, per-ticker resilience, regime-aware position mgmt + daily summary. No live `run_cycle()` run yet (would place a real paper order). |
+| Regime-aware strategy | `strategy.py` | **Working** (50 offline tests); regime switch A→condor / B→long strangle / C→bull-put·bear-call, verified live (TLT→strangle). Proposes only |
+| Pre-trade risk gates + expiry monitor | `risk_manager.py` | **Working** (43 offline tests); decides only. Gate 5 recognises all-long (strangle) as defined-risk; gate 1 uses `ProposedOrder.max_loss` and `AccountState.risk_multiplier` (macro guard halves the cap, clamped ≤ 1.0) — **limit values unchanged** |
+| Contextual Intelligence / Macro-Filter | `context_gatherer.py` | **Working** (19 offline tests); verified live. Macro-event guard (static 2026 FOMC/CPI/NFP calendar), VIX proxy (VIXY), Alpaca News headlines, Wilder-14 RSI → one synthesis string. Fail-safe to "No Context Available"; reads only, never trades |
+| IntelligenceHub (Quantamental) | `intelligence_hub.py` | **Working** (10 offline tests); verified live. **yfinance-primary** — ^VIX/^VIX3M **term structure** → `PANIC_REGIME` on backwardation, `.news`, closes for RSI; pipe-by-pipe fallback to `context_gatherer` then "No Context Available". `MACRO_DANGER` = High-Impact event ≤48h. `main._gather_market_context` calls it |
+| LLM second-opinion gate | `risk_officer.py` | **Working** (47 offline tests); fail-safe VETO. Single-pass `review_trade` + **Bull/Bear/Judge `debate_review`** (top pick) + `post_trade_analysis` -> `lessons_learned.json`. **Featherless AI** (`Qwen/Qwen2.5-7B-Instruct`) primary, **Ollama** (`llama3.2`) auto-fallback. Prompt carries the regime + structure + `### MACRO CONTEXT` |
+| Broker submission (MLEG) | `executor.py` | **Working** (23 offline tests); 2- or 4-leg MLEG; gate-checked, never bypassable. One live paper MLEG filled (QQQ condor, later hand-unwound) |
+| Autonomous loop / driver | `main.py` | **Working** (60 offline tests); running live against the paper account. Context pull + macro guard + prioritised basket loop, global 3-position cap, per-ticker resilience, regime-aware position mgmt + daily summary. First live `run_cycle()` opened + tracked a QQQ condor |
 | Off-hours intelligence | `offhours.py` | **Working** (23 offline tests); observability only — never touches the trade path or a limit. Hourly **Heartbeat** (open or closed), 09:00–09:30 ET **Morning Brief** (pre-market gap → PRE-MARKET ALERT / regime read), 16:00 ET **Nightly Post-Mortem** (pipeline funnel + open P&L + dominant regime). Streams to `logs/agent_activity.log`. |
 | Order cancel / fill polling | — | Not started (`main.py` closes via `TradingClient.close_position` per leg; no re-price / partial-fill handling) |
 
@@ -407,8 +427,8 @@ Pure, offline-tested seams: `decide_exit`, `value_condor`, `manage_open_position
   `AGENT_GAP_ALERT_PCT` (default 0.5).
 
 ## Tests
-`pytest tests/` -> **250 offline tests**, no network (the market calendar ships
-its data; both LLM providers and Alpaca are mocked):
+`pytest tests/` -> **306 offline tests**, no network (the market calendar ships
+its data; both LLM providers, the news/VIX pulls and Alpaca are mocked):
 - `test_alpaca_trader.py` (25) — expiry math, `nth_trading_day` incl. Labor Day /
   Thanksgiving / Christmas, OCC parsing, spread metrics, delta-band filtering.
 - `test_data.py` (19) — `calculate_iv_percentile`, `evaluate_iv_regime`,
@@ -421,24 +441,36 @@ its data; both LLM providers and Alpaca are mocked):
   `plan_long_strangle` (2 long legs, net debit, sized ≤ 1.5%, blocked when debit >
   cap); `plan_bull_put` / `plan_bear_call` (credit spreads, 25% gate still
   applies); `build_strategy_plan` dispatch + explicit regime logging.
-- `test_risk_manager.py` (38) — the 6 gates with boundary cases; `is_defined_risk`
+- `test_risk_manager.py` (43) — the 6 gates with boundary cases; `is_defined_risk`
   all-long (long strangle / single long) passes, all-long-with-zero-qty and any
   mixed short leg still fail; `ProposedOrder.max_loss` overrides the credit
-  formula for debit structures and gate 1 caps a strangle at 1.5%.
+  formula for debit structures and gate 1 caps a strangle at 1.5%; **macro guard**:
+  `is_macro_safe` / `macro_risk_multiplier` (0.5 on a High-Impact day), a halved
+  `AccountState.risk_multiplier` blocks a trade the full cap would pass,
+  `MAX_RISK_PER_TRADE_PCT` byte-unchanged, a multiplier > 1.0 is clamped to 1.0.
+- `test_context_gatherer.py` (19) — Wilder RSI (100 rally / 0 selloff / 50 flat /
+  None short / worked-series band) + `classify_rsi` bands; `upcoming_high_impact`
+  48h window + `high_impact_today`; `score_headlines` +/-/0; `synthesis()` four
+  sections on one line; `MarketContext.unavailable` -> "No Context Available" +
+  macro flag False; `gather_context` happy path, news-only failure degrades just
+  news, total failure -> unavailable, never raises on bad creds; `prioritize`
+  orders by IV-RV spread then news score.
 - `test_executor.py` (23) — blocked / sticky-halt / oversized never reach the
   (fake) client; 4-leg and **2-leg** MLEG build (strangle: BUY/BUY, limit =
   abs(debit)); 3-leg still rejected; API error surfaced not raised;
   no-bypass signature; `from_plan` alias carries `max_loss`; strangle round-trips
   through `submit`.
-- `test_risk_officer.py` (36) — `parse_review` verdict forms incl. Featherless
+- `test_risk_officer.py` (38) — `parse_review` verdict forms incl. Featherless
   trailing-space style; **Featherless primary** (APPROVE/VETO used, Ollama not
   called, client built from key); **Featherless → Ollama fallback** on
   connection / timeout / auth / malformed / unparseable / empty-content /
   no-choices; **no key → Ollama is primary**; **both fail → fail-safe VETO**
   (`provider="none"`, error names both, last raw kept); one prompt is identical
   across both providers; logging of prompt / provider / fallback / both-failed;
-  `warm_up()` one-token request, True/False without raising, logs outcome.
-- `test_main.py` (52) — **position management**: `value_condor` net-mid /
+  `warm_up()` one-token request, True/False without raising, logs outcome;
+  **`### MACRO CONTEXT`** section carries the supplied synthesis string and
+  fails safe to "No Context Available".
+- `test_main.py` (57) — **position management**: `value_condor` net-mid /
   missing-leg; `decide_exit` profit-target (fires at exactly 50%), stop-loss
   (fires at exactly 2× credit lost), expiry-when-flagged, none-when-healthy,
   profit/stop both beat expiry, configurable thresholds; `manage_open_positions`
@@ -457,7 +489,11 @@ its data; both LLM providers and Alpaca are mocked):
   `_maybe_heartbeat` fires once per interval (and marks the session),
   `_maybe_morning_brief` only inside 09:00–09:30 ET and once/day,
   `_maybe_post_mortem` only at/after 16:00 ET and once/day; legacy `session.json`
-  (no off-hours keys) still loads.
+  (no off-hours keys) still loads. **Context wiring**: `run_cycle` gathers the
+  market context first, logs the `MARKET CONTEXT` block, stamps the synthesis on
+  every `DecisionSummary`, evaluates tickers in `prioritize()` order, and threads
+  `AccountState.risk_multiplier = 0.5` on a macro day; a `gather_context` blow-up
+  degrades to "No Context Available" without stopping the cycle.
 - `test_offhours.py` (23) — `count_iv_readings` (rows only, missing file → 0);
   **Heartbeat** render matches the exact `[ts] HEARTBEAT: Status … | Connectivity
   … | Memory N IV readings stored.` format, Active/Idle + OK/Error; `interval_elapsed`

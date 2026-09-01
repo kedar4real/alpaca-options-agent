@@ -18,4 +18,7 @@ wheels/
 # Agent runtime state (main.py)
 session.json
 session.tmp
+session.json.bak
+lessons_learned.json
+lessons_learned.json.tmp
 logs/

@@ -434,6 +434,107 @@ def load_lessons(path: str | None = None, *, limit: int = 12) -> list[str]:
     return [x for x in out if x][-limit:]
 
 
+_LESSON_RE = re.compile(r"\bLESSON\s*[:\-]\s*(.+)\Z", re.IGNORECASE | re.DOTALL)
+_MAX_LESSON_CHARS = 400
+
+
+def save_lesson(
+    lesson: str, *, closed_event: dict, path: str | None = None, max_keep: int = 50
+) -> None:
+    """Append one lesson (with the trade it came from) to ``lessons_learned.json``,
+    keeping only the most recent ``max_keep``. Atomic temp-then-replace write."""
+    p = Path(path or DEFAULT_LESSONS_PATH)
+    try:
+        existing = json.loads(p.read_text(encoding="utf-8"))
+        items = existing.get("lessons", existing) if isinstance(existing, dict) else existing
+    except (FileNotFoundError, ValueError, OSError):
+        items = []
+    items = list(items or [])
+    items.append({
+        "at": closed_event.get("at", ""),
+        "id": closed_event.get("id", ""),
+        "symbol": closed_event.get("symbol", ""),
+        "structure": closed_event.get("structure", ""),
+        "reason": closed_event.get("reason", ""),
+        "pnl": closed_event.get("pnl", 0.0),
+        "lesson": lesson.strip()[:_MAX_LESSON_CHARS],
+    })
+    items = items[-max_keep:]
+    tmp = p.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps({"lessons": items}, indent=2), encoding="utf-8")
+    tmp.replace(p)
+
+
+def build_post_trade_prompt(closed_event: dict, price_action: str | None = None) -> str:
+    pnl = closed_event.get("pnl", 0.0)
+    outcome = "WIN" if pnl > 0 else ("LOSS" if pnl < 0 else "SCRATCH")
+    pa = f"\n    price action    {price_action}" if price_action else ""
+    return f"""A trade this options agent opened has just closed. Reflect on it and
+write ONE concise, actionable lesson the agent should apply to FUTURE trades —
+something concrete about timing, structure, delta, regime fit, or an event it
+should have avoided. If the trade was fine and there is nothing to learn, say so.
+
+CLOSED TRADE
+    ticker          {closed_event.get('symbol', '?')}
+    structure       {closed_event.get('structure', '?')}
+    exit reason     {closed_event.get('reason', '?')}
+    contracts       {closed_event.get('quantity', '?')}
+    realized P&L    ${pnl:,.0f}   ({outcome}){pa}
+
+Answer EXACTLY in this format, nothing else:
+
+LESSON: <one sentence>
+"""
+
+
+def post_trade_analysis(
+    closed_event: dict,
+    *,
+    price_action: str | None = None,
+    path: str | None = None,
+    featherless_api_key: str | None = None,
+    featherless_model: str | None = None,
+    featherless_base_url: str | None = None,
+    featherless_client=None,
+    host: str | None = None,
+    model: str | None = None,
+    timeout: float | None = None,
+    session=None,
+) -> str | None:
+    """After a position closes, ask the LLM for a 'lesson learned' and append it
+    to ``lessons_learned.json`` (which ``debate_review`` injects into every future
+    prompt). Best-effort: any failure returns ``None`` and writes nothing."""
+    _ensure_env_loaded()
+    fl_key = (featherless_api_key if featherless_api_key is not None
+              else os.environ.get("FEATHERLESS_API_KEY", ""))
+    fl_model = featherless_model or os.environ.get("FEATHERLESS_MODEL", DEFAULT_FEATHERLESS_MODEL)
+    fl_base = featherless_base_url or os.environ.get("FEATHERLESS_BASE_URL", DEFAULT_FEATHERLESS_BASE_URL)
+    try:
+        text, prov = _llm_raw(
+            build_post_trade_prompt(closed_event, price_action),
+            fl_client=featherless_client, fl_key=fl_key, fl_model=fl_model, fl_base=fl_base,
+            ol_host=host or DEFAULT_HOST, ol_model=model or DEFAULT_MODEL,
+            ol_timeout=DEFAULT_TIMEOUT if timeout is None else timeout, session=session,
+        )
+    except Exception as exc:  # noqa: BLE001 - post-mortem must never break the loop
+        log.warning("post_trade_analysis: LLM unavailable (%s) — no lesson recorded", exc)
+        return None
+
+    m = _LESSON_RE.search(text or "")
+    lesson = (m.group(1) if m else text or "").strip()
+    lesson = re.sub(r"\s+", " ", lesson)[:_MAX_LESSON_CHARS]
+    if not lesson:
+        return None
+    try:
+        save_lesson(lesson, closed_event=closed_event, path=path)
+    except OSError as exc:
+        log.warning("post_trade_analysis: could not write lessons file: %s", exc)
+        return None
+    log.info("LESSON LEARNED [%s %s via %s]: %s",
+             closed_event.get("symbol", "?"), closed_event.get("reason", "?"), prov, lesson)
+    return lesson
+
+
 def build_advocate_prompt(
     order: ProposedOrder, snapshot: dict, account: AccountState, *, side: str
 ) -> str:

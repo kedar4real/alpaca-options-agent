@@ -128,6 +128,7 @@ class Config:
     heartbeat_minutes: int = 60                 # cadence of the hourly HEARTBEAT line
     gap_alert_pct: float = 0.5                  # pre-market gap over this -> PRE-MARKET ALERT
     debate_enabled: bool = True                 # run the Bull/Bear/Judge debate on the top pick
+    self_correction: bool = True                # post_trade_analysis -> lessons_learned.json
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -148,6 +149,8 @@ class Config:
             heartbeat_minutes=_env_int("AGENT_HEARTBEAT_MINUTES", 60),
             gap_alert_pct=_env_float("AGENT_GAP_ALERT_PCT", 0.5),
             debate_enabled=os.environ.get("AGENT_DEBATE", "true").strip().lower()
+            not in ("0", "false", "no", "off"),
+            self_correction=os.environ.get("AGENT_SELF_CORRECTION", "true").strip().lower()
             not in ("0", "false", "no", "off"),
         )
 
@@ -906,6 +909,16 @@ def run_cycle(conn: AlpacaConnection, session: Session, config: Config, *,
         session, valuations, expiring_ids,
         close_fn=conn.close_condor, config=config, now_iso=now_iso,
     )
+
+    # 2a. self-correction: ask the LLM for a "lesson learned" on each close and
+    #     append it to lessons_learned.json (debate_review injects them). Best-
+    #     effort — never blocks the cycle.
+    if config.self_correction and closed:
+        for ev in closed:
+            try:
+                risk_officer.post_trade_analysis(ev)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("post_trade_analysis failed for %s: %s", ev.get("id"), exc)
 
     # 2. sticky halt latch, then rebuild state (positions may have changed)
     update_sticky_halt(session, account)

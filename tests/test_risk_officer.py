@@ -568,6 +568,44 @@ def test_load_lessons_returns_empty_list_when_file_missing(tmp_path) -> None:
     assert ro.load_lessons(path=str(tmp_path / "nope.json")) == []
 
 
+# --------------------------------------------------------------------------- #
+# Self-correction loop — post_trade_analysis + lessons_learned.json
+# --------------------------------------------------------------------------- #
+_CLOSED = {
+    "kind": "closed", "at": "2026-09-01T15:55:00-04:00", "id": "QQQ-1",
+    "symbol": "QQQ", "structure": "iron_condor", "reason": "stop-loss",
+    "pnl": -412.0, "quantity": 3,
+}
+
+
+def test_save_lesson_appends_caps_and_round_trips(tmp_path) -> None:
+    p = str(tmp_path / "lessons_learned.json")
+    for i in range(5):
+        ro.save_lesson(f"lesson number {i}", closed_event=_CLOSED, path=p, max_keep=3)
+    lessons = ro.load_lessons(path=p)
+    assert lessons == ["lesson number 2", "lesson number 3", "lesson number 4"]  # capped to last 3
+
+
+def test_post_trade_analysis_writes_a_lesson_from_the_llm(tmp_path) -> None:
+    p = str(tmp_path / "lessons_learned.json")
+    fl = FakeFeatherless(content="LESSON: Sold premium into a stop-out; tighten the "
+                         "delta when RSI is mid-range and IV is only borderline rich.")
+    out = ro.post_trade_analysis(_CLOSED, path=p, featherless_client=fl)
+    assert out and "tighten the delta" in out
+    assert ro.load_lessons(path=p)[-1] == out
+    prompt = fl.calls[0]["messages"][0]["content"]
+    assert "QQQ" in prompt and "stop-loss" in prompt and "-412" in prompt
+
+
+def test_post_trade_analysis_is_non_fatal_when_the_llm_is_down(tmp_path) -> None:
+    p = str(tmp_path / "lessons_learned.json")
+    fl = FakeFeatherless(exc=RuntimeError("503"))
+    sess = FakeSession(exc=requests.ConnectionError("no ollama"))
+    out = ro.post_trade_analysis(_CLOSED, path=p, featherless_client=fl, session=sess)
+    assert out is None
+    assert ro.load_lessons(path=p) == []            # nothing written
+
+
 def test_warm_up_returns_false_on_http_error() -> None:
     sess = FakeSession(resp=FakeResp(status=404, payload={"error": "model not found"}))
     assert ro.warm_up(session=sess) is False

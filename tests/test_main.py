@@ -665,6 +665,29 @@ def test_run_cycle_debates_only_the_top_ranked_candidate(tmp_path, monkeypatch) 
     assert "BULL" in qqq.debate and "JUDGE" in qqq.debate
 
 
+def test_run_cycle_runs_self_correction_on_each_close(tmp_path, monkeypatch) -> None:
+    cfg = Config(session_file=str(tmp_path / "s.json"), tickers=("SPY",))
+    session = Session(starting_equity=100_000.0,
+                      open_condors=[tracked("QQQ-1", credit=1.0)])
+    session.open_condors[0].symbol = "QQQ"
+    _stub_context(monkeypatch, priority=())
+    monkeypatch.setattr(agent, "get_market_snapshot", lambda symbol, creds=None: {"symbol": symbol})
+    monkeypatch.setattr(agent, "evaluate_cycle_decision",
+                        lambda *a, **k: DecisionSummary(True, "strategy", "skipped", "no setup"))
+
+    analyzed: list[dict] = []
+    monkeypatch.setattr(agent.risk_officer, "post_trade_analysis",
+                        lambda ev, **kw: analyzed.append(ev))
+
+    class _ClosingConn(_FakeConn):
+        def value_condors(self, condors):
+            return [agent.CondorValuation(condors[0], 0.20)]   # deep profit -> closes
+
+    agent.run_cycle(_ClosingConn(), session, cfg, now_et=None)
+    assert len(analyzed) == 1 and analyzed[0]["reason"] == "profit-target"
+    assert analyzed[0]["symbol"] == "QQQ"
+
+
 def test_run_cycle_context_failure_is_non_fatal(tmp_path, monkeypatch) -> None:
     cfg = Config(session_file=str(tmp_path / "s.json"), tickers=("SPY",))
     session = Session(starting_equity=100_000.0)

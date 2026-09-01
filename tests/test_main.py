@@ -526,10 +526,26 @@ def _fake_executed_summary(symbol):
                            order_detail=f"1x {symbol} iron_condor", plan=plan, result=result)
 
 
+def _stub_context(monkeypatch, *, macro=False, priority=None):
+    """Keep run_cycle offline: no real context_gatherer network calls."""
+    from trading_agent.context_gatherer import MarketContext
+    mc = MarketContext(
+        as_of="2026-09-01T10:00:00+00:00", macro_events=(),
+        macro_today_high_impact=macro, vix_proxy=17.0, vix_change_5d_pct=0.0,
+        vix_note="calm", tickers=(), ok=True, errors=(),
+    )
+    monkeypatch.setattr(agent, "_gather_market_context", lambda conn, config, now_et: mc)
+    if priority is not None:
+        monkeypatch.setattr(agent.context_gatherer, "prioritize",
+                            lambda symbols, snaps, ctx: list(priority))
+    return mc
+
+
 def test_run_cycle_evaluates_every_ticker_and_caps_positions_globally(tmp_path, monkeypatch) -> None:
     cfg = Config(session_file=str(tmp_path / "s.json"),
                  tickers=("SPY", "QQQ", "IWM", "TLT"))
     session = Session(starting_equity=100_000.0)
+    _stub_context(monkeypatch, priority=("SPY", "QQQ", "IWM", "TLT"))
 
     monkeypatch.setattr(agent, "get_market_snapshot",
                         lambda symbol, creds=None: {"symbol": symbol})
@@ -557,6 +573,7 @@ def test_run_cycle_evaluates_every_ticker_and_caps_positions_globally(tmp_path, 
 def test_run_cycle_one_bad_ticker_does_not_stop_the_others(tmp_path, monkeypatch) -> None:
     cfg = Config(session_file=str(tmp_path / "s.json"), tickers=("SPY", "QQQ"))
     session = Session(starting_equity=100_000.0)
+    _stub_context(monkeypatch, priority=("QQQ",))
 
     def boom_snapshot(symbol, creds=None):
         if symbol == "SPY":
@@ -571,6 +588,48 @@ def test_run_cycle_one_bad_ticker_does_not_stop_the_others(tmp_path, monkeypatch
     report = agent.run_cycle(_FakeConn(), session, cfg, now_et=None)
     assert [d.stage for d in report.decisions] == ["precheck", "strategy"]
     assert report.decisions[0].outcome == "error" and "SPY" in report.decisions[0].reason
+
+
+def test_run_cycle_gathers_context_logs_it_and_threads_the_macro_guard(tmp_path, monkeypatch, caplog) -> None:
+    cfg = Config(session_file=str(tmp_path / "s.json"), tickers=("SPY", "QQQ"))
+    session = Session(starting_equity=100_000.0)
+    _stub_context(monkeypatch, macro=True, priority=("QQQ", "SPY"))
+    monkeypatch.setattr(agent, "get_market_snapshot", lambda symbol, creds=None: {"symbol": symbol})
+
+    seen = {"order": [], "mult": []}
+
+    def fake_eval(snapshot, account, *, config, today=None, market_context="", **kw):
+        seen["order"].append(snapshot["symbol"])
+        seen["mult"].append(account.risk_multiplier)
+        seen["ctx"] = market_context
+        return DecisionSummary(True, "strategy", "skipped", "no setup", market_context=market_context)
+
+    monkeypatch.setattr(agent, "evaluate_cycle_decision", fake_eval)
+
+    with caplog.at_level("INFO"):
+        report = agent.run_cycle(_FakeConn(), session, cfg, now_et=None)
+
+    assert seen["order"] == ["QQQ", "SPY"]           # priority order honoured
+    assert seen["mult"] == [0.5, 0.5]               # macro day -> gate-1 cap halved
+    assert seen["ctx"] and all(d.market_context == seen["ctx"] for d in report.decisions)
+    assert any("MARKET CONTEXT" in r.message for r in caplog.records)
+    assert any("MACRO GUARD ACTIVE" in r.message for r in caplog.records)
+
+
+def test_run_cycle_context_failure_is_non_fatal(tmp_path, monkeypatch) -> None:
+    cfg = Config(session_file=str(tmp_path / "s.json"), tickers=("SPY",))
+    session = Session(starting_equity=100_000.0)
+    # real _gather_market_context, but the IntelligenceHub blows up -> unavailable fallback
+    monkeypatch.setattr(agent.intelligence_hub, "gather",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("net down")))
+    monkeypatch.setattr(agent, "get_market_snapshot", lambda symbol, creds=None: {"symbol": symbol})
+    monkeypatch.setattr(agent, "evaluate_cycle_decision",
+                        lambda snapshot, account, **kw: DecisionSummary(
+                            True, "strategy", "skipped", "no setup",
+                            market_context=kw.get("market_context", "")))
+
+    report = agent.run_cycle(_FakeConn(), session, cfg, now_et=None)
+    assert report.decisions[0].market_context == "No Context Available"
 
 
 # ======================================================================= #
@@ -605,6 +664,7 @@ def test_describe_order_labels_a_debit_structure() -> None:
 def test_run_cycle_accumulates_the_daily_activity_funnel(tmp_path, monkeypatch) -> None:
     cfg = Config(session_file=str(tmp_path / "s.json"), tickers=("SPY", "QQQ"))
     session = Session(starting_equity=100_000.0)
+    _stub_context(monkeypatch, priority=("SPY", "QQQ"))
     monkeypatch.setattr(agent, "get_market_snapshot",
                         lambda symbol, creds=None: {"symbol": symbol})
     monkeypatch.setattr(agent, "evaluate_cycle_decision",

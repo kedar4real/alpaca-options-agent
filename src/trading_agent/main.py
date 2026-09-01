@@ -63,6 +63,8 @@ from datetime import date, datetime, time as dtime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from . import context_gatherer
+from . import intelligence_hub
 from . import offhours
 from . import risk_officer
 from .data import IV_HISTORY_PATH, get_market_snapshot
@@ -75,6 +77,7 @@ from .risk_manager import (
     OrderLeg,
     check_order,
     flag_expiring_positions,
+    macro_risk_multiplier,
 )
 from .strategy import build_strategy_plan
 from . import executor as executor_mod
@@ -351,15 +354,19 @@ def reconcile_account_state(
     *,
     current_equity: float,
     day_start_equity: float,
+    risk_multiplier: float = 1.0,
 ) -> AccountState:
     """Build the AccountState the gates consume. ``starting_equity`` comes from
-    the persisted session; the sticky halt is carried forward."""
+    the persisted session; the sticky halt is carried forward. ``risk_multiplier``
+    is the macro guard (< 1.0 on a High-Impact macro day) — it only tightens
+    gate 1, never loosens it."""
     return AccountState(
         starting_equity=session.starting_equity,
         current_equity=float(current_equity),
         day_start_equity=float(day_start_equity),
         open_positions=tuple(c.as_open_position() for c in session.open_condors),
         trading_halted=session.trading_halted,
+        risk_multiplier=float(risk_multiplier),
     )
 
 
@@ -534,6 +541,7 @@ class DecisionSummary:
     decision: object = None
     review: object = None
     result: object = None
+    market_context: str = ""          # the synthesis string handed to the risk_officer
 
     def render(self) -> str:
         head = {
@@ -563,6 +571,7 @@ def evaluate_new_trade(
     *,
     config: Config,
     today: date | None = None,
+    market_context: str = "",
     plan_fn=None,
     to_order_fn=None,
     check_fn=None,
@@ -575,6 +584,8 @@ def evaluate_new_trade(
 
     The ``*_fn`` hooks default to the real modules; tests inject spies. Any
     stage a spy is called is appended to ``call_log`` when provided.
+    ``market_context`` is the context_gatherer synthesis string — forwarded into
+    the risk_officer prompt and stamped on every returned summary.
     """
     plan_fn = plan_fn or (lambda snap, today=None: build_strategy_plan(snap, today=today))
     to_order_fn = to_order_fn or executor_mod.from_plan
@@ -586,15 +597,19 @@ def evaluate_new_trade(
         if call_log is not None:
             call_log.append(stage)
 
+    def done(summary: DecisionSummary) -> DecisionSummary:
+        summary.market_context = market_context
+        return summary
+
     # ---- 1. strategy ------------------------------------------------------- #
     mark("strategy")
     plan = plan_fn(snapshot, today=today)
     if not getattr(plan, "eligible", False):
-        return DecisionSummary(
+        return done(DecisionSummary(
             True, "strategy", "skipped",
             f"strategy did not propose a trade — {getattr(plan, 'reason', 'ineligible')}",
             plan=plan,
-        )
+        ))
 
     mark("to_order")
     order = to_order_fn(plan)
@@ -604,44 +619,45 @@ def evaluate_new_trade(
     mark("risk_manager")
     decision = check_fn(order, account)
     if not decision.approved:
-        return DecisionSummary(
+        return done(DecisionSummary(
             True, "risk_manager", "blocked",
             "risk_manager rejected — " + "; ".join(decision.blocks),
             detail, plan, decision,
-        )
+        ))
 
     # ---- 3. risk_officer ----------------------------------------------- #
-    # Hand the regime choice to the reviewer alongside the snapshot.
+    # Hand the regime choice + macro context to the reviewer alongside the snapshot.
     review_snapshot = {
         **snapshot,
         "structure": getattr(plan, "structure", None),
         "regime": getattr(plan, "regime", None),
         "regime_reason": getattr(plan, "regime_reason", None),
+        "market_context": market_context,
     }
     mark("risk_officer")
     review = review_fn(order, review_snapshot, account, timeout=config.review_timeout_s)
     if not getattr(review, "approved", False):
-        return DecisionSummary(
+        return done(DecisionSummary(
             True, "risk_officer", "vetoed",
             f"risk_officer VETO ({getattr(review, 'provider', '?')}) — "
             f"{getattr(review, 'thesis', '')}",
             detail, plan, decision, review,
-        )
+        ))
 
     # ---- 4. executor (re-runs check_order internally — the real gate) --- #
     mark("executor")
     result = submit_fn(order, account)
     if getattr(result, "submitted", False):
-        return DecisionSummary(
+        return done(DecisionSummary(
             True, "executor", "executed",
             f"submitted order {result.order_id} — {detail}",
             detail, plan, decision, review, result,
-        )
-    return DecisionSummary(
+        ))
+    return done(DecisionSummary(
         True, "executor", "error",
         f"executor did not submit — {getattr(result, 'error', None) or 'blocked at final gate'}",
         detail, plan, decision, review, result,
-    )
+    ))
 
 
 def evaluate_cycle_decision(
@@ -650,21 +666,24 @@ def evaluate_cycle_decision(
     *,
     config: Config,
     today: date | None = None,
+    market_context: str = "",
     **pipeline_kwargs,
 ) -> DecisionSummary:
     """Prechecks (halt, capacity) then the pipeline. Always returns a summary."""
     halt = halt_status(account)
     if halt is not None:
-        return DecisionSummary(False, "precheck", "halted", halt)
+        return DecisionSummary(False, "precheck", "halted", halt, market_context=market_context)
 
     n_open = len(account.open_positions)
     if n_open >= MAX_CONCURRENT_POSITIONS:
         return DecisionSummary(
             False, "precheck", "skipped",
             f"max positions reached ({n_open}/{MAX_CONCURRENT_POSITIONS})",
+            market_context=market_context,
         )
 
-    return evaluate_new_trade(snapshot, account, config=config, today=today, **pipeline_kwargs)
+    return evaluate_new_trade(snapshot, account, config=config, today=today,
+                              market_context=market_context, **pipeline_kwargs)
 
 
 # --------------------------------------------------------------------------- #
@@ -823,6 +842,18 @@ class CycleReport:
         return max(self.decisions, key=lambda d: rank.get(d.outcome, -1))
 
 
+def _gather_market_context(conn: AlpacaConnection, config: Config,
+                           now_et: datetime) -> context_gatherer.MarketContext:
+    """Quantamental context pull for the cycle (IntelligenceHub: yfinance primary,
+    Alpaca fallback). Fail-safe to 'No Context Available' so a data outage never
+    blocks trading."""
+    try:
+        return intelligence_hub.gather(conn.creds, config.tickers, now=now_et)
+    except Exception as exc:  # noqa: BLE001
+        log.error("context gather failed: %s", exc)
+        return context_gatherer.MarketContext.unavailable(str(exc))
+
+
 def run_cycle(conn: AlpacaConnection, session: Session, config: Config, *,
               now_et: datetime | None = None) -> CycleReport:
     now_et = now_et or datetime.now(ET)
@@ -833,9 +864,27 @@ def run_cycle(conn: AlpacaConnection, session: Session, config: Config, *,
     current_equity = float(acct.equity)
     day_start_equity = float(getattr(acct, "last_equity", None) or current_equity)
 
-    account = reconcile_account_state(
-        session, current_equity=current_equity, day_start_equity=day_start_equity
-    )
+    # 0. CONTEXTUAL INTELLIGENCE — one pull per cycle, before anything else.
+    market_context = _gather_market_context(conn, config, now_et)
+    ctx_str = market_context.synthesis()
+    offhours_log.info("MARKET CONTEXT\n%s\n%s\n%s", "=" * 60, ctx_str, "=" * 60)
+    if market_context.regime_flags():
+        log.warning("REGIME SIGNALS: %s — short-vol structures will be vetoed in "
+                    "favour of long-vol this cycle", ", ".join(market_context.regime_flags()))
+
+    # Macro guard: a High-Impact event today halves gate 1's cap for this cycle.
+    risk_mult = macro_risk_multiplier(macro_high_impact=market_context.macro_today_high_impact)
+    if risk_mult < 1.0:
+        log.warning("MACRO GUARD ACTIVE — high-impact event today; per-trade risk "
+                    "cap reduced to %.0f%% for this cycle", risk_mult * 100)
+
+    def _account() -> AccountState:
+        return reconcile_account_state(
+            session, current_equity=current_equity,
+            day_start_equity=day_start_equity, risk_multiplier=risk_mult,
+        )
+
+    account = _account()
 
     # 1. MANAGE OPEN POSITIONS FIRST — across the whole basket
     expiring = flag_expiring_positions(account.open_positions, today=today)
@@ -848,33 +897,40 @@ def run_cycle(conn: AlpacaConnection, session: Session, config: Config, *,
 
     # 2. sticky halt latch, then rebuild state (positions may have changed)
     update_sticky_halt(session, account)
-    account = reconcile_account_state(
-        session, current_equity=current_equity, day_start_equity=day_start_equity
-    )
+    account = _account()
 
-    # 3. + 4. evaluate EACH ticker independently; exposure stays global (the
-    #     3-position cap is enforced on the shared open_positions list, and we
-    #     rebuild `account` after every open so the next ticker sees it).
+    # 3. pre-fetch every ticker's snapshot, then rank them so the best
+    #    opportunity (richest IV-RV spread, then news sentiment) is evaluated
+    #    first under the shared 3-position cap.
     decisions: list[DecisionSummary] = []
     opened: list[dict] = []
+    snapshots: dict[str, dict] = {}
     for symbol in config.tickers:
         try:
-            snapshot = get_market_snapshot(symbol, creds=conn.creds)
+            snapshots[symbol] = get_market_snapshot(symbol, creds=conn.creds)
         except Exception as exc:  # noqa: BLE001 - one ticker's data must not kill the cycle
             log.error("snapshot for %s failed: %s", symbol, exc)
-            decisions.append(DecisionSummary(False, "precheck", "error",
-                                             f"{symbol}: snapshot failed — {exc}"))
-            continue
+            decisions.append(DecisionSummary(
+                False, "precheck", "error", f"{symbol}: snapshot failed — {exc}",
+                market_context=ctx_str,
+            ))
 
-        decision = evaluate_cycle_decision(snapshot, account, config=config, today=today)
+    ordered = context_gatherer.prioritize(list(snapshots), snapshots, market_context)
+    if ordered:
+        log.info("cycle priority order: %s", " > ".join(ordered))
+
+    # 4. evaluate in priority order; exposure stays GLOBAL (rebuild `account`
+    #    after every open so the next ticker sees the updated count).
+    for symbol in ordered:
+        decision = evaluate_cycle_decision(
+            snapshots[symbol], account, config=config, today=today, market_context=ctx_str
+        )
         decisions.append(decision)
         log.info("[%s] %s", symbol, decision.render())
 
         if decision.outcome == "executed":
             opened.append(_record_opened(session, decision, now_iso))
-            account = reconcile_account_state(
-                session, current_equity=current_equity, day_start_equity=day_start_equity
-            )
+            account = _account()
 
     _accumulate_daily_activity(session, decisions, today=today, basket_size=len(config.tickers))
     save_session(session, config.session_file)

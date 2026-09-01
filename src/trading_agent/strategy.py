@@ -43,12 +43,14 @@ SHORT_DELTA_TARGET = 0.225
 SHORT_DELTA_MIN = 0.20
 SHORT_DELTA_MAX = 0.25
 
-# Dynamic delta scaling: the short (premium-capture) legs move with the vol level.
-# Low IV -> further OTM for safety; high IV -> closer to ATM to bank more premium.
-DYN_DELTA_LOW = 0.10
-DYN_DELTA_HIGH = 0.30
-DYN_IV_LOW = 0.15                # ATM IV at/below this is "low vol"
-DYN_IV_HIGH = 0.30              # ATM IV at/above this is "high vol"
+# IV-relative delta scaling: the short (premium-capture) legs move INVERSELY with
+# the vol level. When IV is high the wings move fast, so push strikes FURTHER OTM
+# (lower delta) to lift probability-of-profit; when IV is low/crushed, move CLOSER
+# to ATM (higher delta) so the credit is still worth taking.
+DYN_DELTA_LOW_IV = 0.25          # target delta when ATM IV is low  (closer to ATM, keep credit)
+DYN_DELTA_HIGH_IV = 0.15         # target delta when ATM IV is high (further OTM, raise PoP)
+DYN_IV_LOW = 0.15               # ATM IV at/below this is "low vol"
+DYN_IV_HIGH = 0.30             # ATM IV at/above this is "high vol"
 
 LONG_DELTA_TARGET = 0.10
 LONG_DELTA_TOLERANCE = 0.05   # accept 0.05-0.15 for the long leg's delta
@@ -356,21 +358,21 @@ def select_leg_near_delta(
 
 
 def dynamic_short_delta(atm_iv: float | None) -> float:
-    """Volatility-adjusted short-leg delta target:
+    """IV-relative short-leg delta target (moves *inversely* with vol):
 
-    * ``atm_iv`` at/below ``DYN_IV_LOW``  -> ``DYN_DELTA_LOW``  (0.10, further OTM
-      for safety when there is little premium to reach for);
-    * ``atm_iv`` at/above ``DYN_IV_HIGH`` -> ``DYN_DELTA_HIGH`` (0.30, closer to
-      ATM to bank the fat premium);
+    * ``atm_iv`` at/below ``DYN_IV_LOW``  -> ``DYN_DELTA_LOW_IV``  (0.25, closer to
+      ATM: vol is crushed, reach a little to keep a worthwhile credit);
+    * ``atm_iv`` at/above ``DYN_IV_HIGH`` -> ``DYN_DELTA_HIGH_IV`` (0.15, further
+      OTM: the wings move fast, buy probability-of-profit);
     * anything in the normal band (or ``None``) -> the unchanged
       ``SHORT_DELTA_TARGET`` (0.225).
     """
     if atm_iv is None:
         return SHORT_DELTA_TARGET
     if atm_iv <= DYN_IV_LOW:
-        return DYN_DELTA_LOW
+        return DYN_DELTA_LOW_IV
     if atm_iv >= DYN_IV_HIGH:
-        return DYN_DELTA_HIGH
+        return DYN_DELTA_HIGH_IV
     return SHORT_DELTA_TARGET
 
 

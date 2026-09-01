@@ -413,12 +413,15 @@ def test_build_strategy_plan_no_regime_returns_ineligible(caplog) -> None:
 # =========================================================================== #
 # Quant enhancement 1 — dynamic delta scaling
 # =========================================================================== #
-def test_dynamic_short_delta_scales_with_iv() -> None:
-    assert s.dynamic_short_delta(None) == s.SHORT_DELTA_TARGET      # no IV -> unchanged
-    assert s.dynamic_short_delta(0.10) == pytest.approx(s.DYN_DELTA_LOW)    # low IV -> 0.10
-    assert s.dynamic_short_delta(0.40) == pytest.approx(s.DYN_DELTA_HIGH)   # high IV -> 0.30
+def test_dynamic_short_delta_scales_inversely_with_iv() -> None:
+    # IV-relative delta: high IV -> push strikes FURTHER OTM (lower delta, more PoP);
+    # low/crushed IV -> move CLOSER to ATM (higher delta) to keep a worthwhile credit.
+    assert s.dynamic_short_delta(None) == s.SHORT_DELTA_TARGET       # no IV -> unchanged
+    assert s.dynamic_short_delta(0.10) == pytest.approx(s.DYN_DELTA_LOW_IV)   # low IV  -> 0.25 (closer)
+    assert s.dynamic_short_delta(0.40) == pytest.approx(s.DYN_DELTA_HIGH_IV)  # high IV -> 0.15 (further OTM)
+    assert s.DYN_DELTA_HIGH_IV < s.SHORT_DELTA_TARGET < s.DYN_DELTA_LOW_IV
     mid = s.dynamic_short_delta((s.DYN_IV_LOW + s.DYN_IV_HIGH) / 2)
-    assert s.DYN_DELTA_LOW < mid < s.DYN_DELTA_HIGH                 # interpolated between
+    assert s.DYN_DELTA_HIGH_IV < mid < s.DYN_DELTA_LOW_IV           # normal band sits between
 
 
 def test_select_short_leg_accepts_a_dynamic_target() -> None:

@@ -47,6 +47,8 @@ RSI_OVERSOLD = 30.0
 ADX_PERIOD = 14
 ADX_TREND = 25.0                  # ADX at/above this => strong trend (disable condors)
 ADX_RANGE = 20.0                 # ADX below this => dead market (condors welcome)
+CORR_WINDOW = 10                 # trading days of returns for the basket correlation
+CORR_THRESHOLD = 0.8            # pairwise correlation at/above this => one cluster
 VIX_PROXY_SYMBOL = "VIXY"          # short-term VIX-futures ETF (proxy for ^VIX)
 VIX_SPIKE_5D_PCT = 10.0           # +this much over ~5 sessions => "possibly spiking"
 NEWS_LOOKBACK_DAYS = 5
@@ -244,6 +246,58 @@ def classify_adx(adx: float | None) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# Basket correlation clusters
+# --------------------------------------------------------------------------- #
+def _daily_returns(closes, window: int):
+    c = np.asarray([float(x) for x in (closes or []) if x is not None], dtype=float)
+    if c.size < window + 1:
+        return None
+    c = c[-(window + 1):]
+    prev = c[:-1]
+    if np.any(prev == 0):
+        return None
+    return np.diff(c) / prev
+
+
+def correlation_clusters(
+    closes_map, *, window: int = CORR_WINDOW, threshold: float = CORR_THRESHOLD
+) -> tuple[frozenset[str], ...]:
+    """Group basket symbols whose ``window``-day return series are pairwise
+    correlated at/above ``threshold`` into clusters (union-find over the
+    correlation graph). Only clusters with >= 2 members are returned; a symbol
+    with too little history or a flat series is dropped. Empty tuple when nothing
+    clusters — the caller then treats every name as its own position."""
+    rets: dict[str, np.ndarray] = {}
+    for s, closes in (closes_map or {}).items():
+        r = _daily_returns(closes, window)
+        if r is not None and float(np.std(r)) > 0.0:
+            rets[s] = r
+    syms = sorted(rets)
+
+    parent = {s: s for s in syms}
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for i, a in enumerate(syms):
+        for b in syms[i + 1:]:
+            cc = float(np.corrcoef(rets[a], rets[b])[0, 1])
+            if np.isfinite(cc) and cc >= threshold:
+                parent[find(a)] = find(b)
+
+    groups: dict[str, set] = {}
+    for s in syms:
+        groups.setdefault(find(s), set()).add(s)
+    return tuple(sorted(
+        (frozenset(g) for g in groups.values() if len(g) >= 2),
+        key=lambda g: sorted(g),
+    ))
+
+
+# --------------------------------------------------------------------------- #
 # Headline sentiment
 # --------------------------------------------------------------------------- #
 def _words(text: str):
@@ -291,6 +345,7 @@ class MarketContext:
     vix_vxv_ratio: float | None = None    # > 1.0 => backwardation
     panic_regime: bool = False            # VIX term structure inverted
     macro_danger: bool = False            # High-Impact ("Red Folder") event within 48h
+    correlation_clusters: tuple[frozenset[str], ...] = ()  # >0.8 10-day correlated baskets
 
     # -- lookups ------------------------------------------------------------- #
     def ticker(self, symbol: str) -> TickerContext | None:
@@ -306,6 +361,14 @@ class MarketContext:
     def adx_direction_for(self, symbol: str) -> str | None:
         t = self.ticker(symbol)
         return t.adx_direction if t else None
+
+    def cluster_for(self, symbol: str) -> frozenset[str]:
+        """The >0.8-correlated cluster containing ``symbol`` (>= 2 names), or a
+        singleton ``frozenset`` when it stands alone."""
+        for c in self.correlation_clusters:
+            if symbol in c:
+                return c
+        return frozenset({symbol})
 
     def regime_flags(self) -> list[str]:
         flags = []
@@ -358,6 +421,9 @@ class MarketContext:
         parts = [f"Macro: {self._macro_str()}", f"VIX: {self._vix_str()}"]
         if self.regime_flags():
             parts.append("REGIME SIGNALS: " + ", ".join(self.regime_flags()))
+        if self.correlation_clusters:
+            grp = "; ".join("{" + ",".join(sorted(c)) + "}" for c in self.correlation_clusters)
+            parts.append(f"CORRELATED (>0.8, 10d): {grp}")
         for t in self.tickers:
             heads = "; ".join(t.headlines) if t.headlines else "(unavailable)"
             rsi = "n/a" if t.rsi is None else f"{t.rsi:.1f}"
@@ -510,6 +576,12 @@ def gather_context(
         rsi = wilder_rsi(closes_map.get(s) or [])
         tickers.append(TickerContext(s, rsi, classify_rsi(rsi), heads, score_headlines(heads)))
 
+    try:
+        clusters = correlation_clusters(closes_map)
+    except Exception as exc:  # noqa: BLE001
+        clusters = ()
+        errors.append(f"corr: {exc}")
+
     got_something = bool(events) or vix is not None or \
         any(t.headlines for t in tickers) or any(t.rsi is not None for t in tickers)
     if not got_something:
@@ -526,6 +598,7 @@ def gather_context(
         tickers=tuple(tickers),
         ok=True,
         errors=tuple(errors),
+        correlation_clusters=clusters,
     )
 
 

@@ -10,6 +10,8 @@ runs over the open positions:
   2. Daily loss halt       >= 2.5% of *starting* equity  -> no new trades today
   3. Total drawdown floor  >= 5%  of *starting* equity  -> halt for the comp
   4. Max concurrent positions = 3
+  4b. Correlation guard: a >0.8 (10-day) correlated cluster of basket tickers
+      counts as ONE slot toward the cap (optional; needs IntelligenceHub data)
   5. Defined-risk invariant: per right, long-leg contracts == short-leg contracts
   6. Expiration auto-close: flag positions within 1 trading day of expiry
 
@@ -74,6 +76,7 @@ class ProposedOrder:
     # risk. When None, the classic credit-spread formula below is used. This does
     # not change any limit — gate 1 still caps risk at 1.5% of current equity.
     max_loss: float | None = None
+    underlying: str | None = None     # basket ticker (for the correlation guard)
 
     @property
     def risk_dollars(self) -> float:
@@ -84,10 +87,11 @@ class ProposedOrder:
 
 @dataclass(frozen=True)
 class OpenPosition:
-    symbol: str
+    symbol: str                       # caller's tracking id (round-tripped as-is)
     expiry: date
     quantity: int
     legs: tuple[OrderLeg, ...] = ()
+    underlying: str | None = None     # basket ticker (for the correlation guard)
 
 
 @dataclass(frozen=True)
@@ -167,8 +171,20 @@ def is_defined_risk(legs: tuple[OrderLeg, ...]) -> bool:
 # --------------------------------------------------------------------------- #
 # Gates 1-5 — pre-trade order check
 # --------------------------------------------------------------------------- #
-def check_order(order: ProposedOrder, account: AccountState) -> RiskDecision:
-    """Run gates 1-5 against a proposed order. Collects *every* failed gate."""
+def check_order(
+    order: ProposedOrder,
+    account: AccountState,
+    *,
+    correlation_clusters: tuple[frozenset[str], ...] = (),
+) -> RiskDecision:
+    """Run gates 1-5 against a proposed order. Collects *every* failed gate.
+
+    ``correlation_clusters`` (from the IntelligenceHub, optional) are groups of
+    basket tickers whose 10-day returns are correlated > 0.8. When the proposed
+    order's ``underlying`` is in a cluster that already holds an open position,
+    gate 4b blocks it — three condors on SPY/QQQ/IWM are one leveraged bet on
+    equity risk, not a diversified book. Absent clusters, behaviour is unchanged.
+    """
     blocks: list[str] = []
     checks: dict[str, bool] = {}
 
@@ -212,6 +228,27 @@ def check_order(order: ProposedOrder, account: AccountState) -> RiskDecision:
         blocks.append(
             f"{n_open} open positions >= max {MAX_CONCURRENT_POSITIONS} concurrent"
         )
+
+    # (4b) correlation guard — a >0.8 (10-day) correlated cluster gets ONE slot
+    #      toward the cap; a second name in an already-occupied cluster is blocked.
+    new_sym = order.underlying
+    if correlation_clusters and new_sym:
+        open_underlyings = {
+            p.underlying for p in account.open_positions if p.underlying
+        }
+        ok = True
+        for cluster in correlation_clusters:
+            if new_sym in cluster and len(cluster) >= 2:
+                clash = sorted(open_underlyings & (cluster - {new_sym}))
+                if clash:
+                    ok = False
+                    blocks.append(
+                        f"correlation guard: {new_sym} is >0.8 correlated (10d) with "
+                        f"open {', '.join(clash)} — that cluster already holds its "
+                        f"one slot toward the {MAX_CONCURRENT_POSITIONS}-position cap"
+                    )
+                break
+        checks["correlation_guard"] = ok
 
     # (1) max risk per trade — the 1.5% cap. A macro-guard multiplier can only
     #     tighten it (clamped to <= 1.0); it can never raise the ceiling.

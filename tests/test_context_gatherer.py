@@ -113,6 +113,28 @@ def test_classify_adx_bands() -> None:
     assert cg.classify_adx(None) == "n/a"
 
 
+# ======================================================================= #
+# Basket correlation clusters
+# ======================================================================= #
+def test_correlation_clusters_groups_names_that_move_together() -> None:
+    spy = [100 + i for i in range(15)]
+    qqq = [200 + 2 * i for i in range(15)]          # affine fn of spy -> identical returns
+    tlt = [50 + ((-1) ** i) for i in range(15)]     # zig-zag, uncorrelated
+    clusters = cg.correlation_clusters({"SPY": spy, "QQQ": qqq, "TLT": tlt})
+    assert clusters == (frozenset({"QQQ", "SPY"}),)
+
+
+def test_correlation_clusters_empty_when_nothing_correlates() -> None:
+    a = [100, 102, 101, 103, 102, 104, 103, 105, 104, 106, 105, 107]
+    b = [100, 98, 99, 97, 98, 96, 97, 95, 96, 94, 95, 93]   # mirror -> negative corr
+    assert cg.correlation_clusters({"A": a, "B": b}) == ()
+
+
+def test_correlation_clusters_skips_series_with_too_little_history() -> None:
+    assert cg.correlation_clusters({"A": [1, 2, 3], "B": [1, 2, 3]}) == ()
+    assert cg.correlation_clusters({}) == ()
+
+
 def test_classify_rsi_bands() -> None:
     assert classify_rsi(72.0) == "overbought"
     assert classify_rsi(70.0) == "overbought"

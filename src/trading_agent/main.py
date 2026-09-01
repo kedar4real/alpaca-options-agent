@@ -224,8 +224,10 @@ class TrackedCondor:
 
     def as_open_position(self) -> OpenPosition:
         # OpenPosition.symbol carries our tracking id so flag_expiring_positions
-        # round-trips it back to us.
-        return OpenPosition(self.id, self.expiry, self.quantity, self.legs)
+        # round-trips it back to us; underlying carries the basket ticker for the
+        # correlation guard.
+        return OpenPosition(self.id, self.expiry, self.quantity, self.legs,
+                            underlying=self.symbol)
 
     def to_dict(self) -> dict:
         return {
@@ -598,7 +600,8 @@ def evaluate_new_trade(
     """
     plan_fn = plan_fn or (lambda snap, today=None: build_strategy_plan(snap, today=today, context=context))
     to_order_fn = to_order_fn or executor_mod.from_plan
-    check_fn = check_fn or check_order
+    _clusters = tuple(getattr(context, "correlation_clusters", ()) or ())
+    check_fn = check_fn or (lambda o, a: check_order(o, a, correlation_clusters=_clusters))
     review_fn = review_fn or risk_officer.review_trade
     submit_fn = submit_fn or executor_mod.submit_iron_condor
 

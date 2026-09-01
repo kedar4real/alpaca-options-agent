@@ -30,9 +30,10 @@ def condor_legs(qty: int) -> tuple[OrderLeg, ...]:
     )
 
 
-def order(wing: float = 5.0, credit: float = 2.0, qty: int = 1) -> rm.ProposedOrder:
+def order(wing: float = 5.0, credit: float = 2.0, qty: int = 1,
+          underlying: str | None = None) -> rm.ProposedOrder:
     # per-contract risk = (5.0 - 2.0) * 100 = $300
-    return rm.ProposedOrder(wing, credit, qty, condor_legs(qty))
+    return rm.ProposedOrder(wing, credit, qty, condor_legs(qty), underlying=underlying)
 
 
 def account(
@@ -185,6 +186,56 @@ def test_three_open_positions_blocks_the_fourth() -> None:
     assert d.open_position_count == 3
     assert d.checks["max_concurrent_positions"] is False
     assert d.approved is False
+
+
+# --------------------------------------------------------------------------- #
+# Gate 4b — correlation guard (a >0.8 10d cluster gets one slot)
+# --------------------------------------------------------------------------- #
+EQUITY_CLUSTER = (frozenset({"SPY", "QQQ", "IWM"}),)
+
+
+def _pos_u(underlying: str, tid: str = "id") -> rm.OpenPosition:
+    return rm.OpenPosition(tid, date(2027, 1, 15), 1, CONDOR, underlying=underlying)
+
+
+def test_correlation_guard_blocks_a_second_name_in_an_open_cluster() -> None:
+    d = rm.check_order(
+        order(underlying="QQQ"),
+        account(100_000, positions=(_pos_u("SPY"),)),
+        correlation_clusters=EQUITY_CLUSTER,
+    )
+    assert d.checks["correlation_guard"] is False
+    assert d.approved is False
+    assert any("correlation guard" in b and "SPY" in b for b in d.blocks)
+
+
+def test_correlation_guard_allows_an_uncorrelated_name() -> None:
+    d = rm.check_order(
+        order(underlying="TLT"),
+        account(100_000, positions=(_pos_u("SPY"),)),
+        correlation_clusters=EQUITY_CLUSTER,
+    )
+    assert d.checks["correlation_guard"] is True
+    assert d.approved is True
+
+
+def test_correlation_guard_allows_the_first_name_in_a_cluster() -> None:
+    d = rm.check_order(
+        order(underlying="QQQ"),
+        account(100_000, positions=(_pos_u("TLT"),)),
+        correlation_clusters=EQUITY_CLUSTER,
+    )
+    assert d.checks["correlation_guard"] is True
+    assert d.approved is True
+
+
+def test_correlation_guard_is_inert_without_clusters() -> None:
+    d = rm.check_order(
+        order(underlying="QQQ"),
+        account(100_000, positions=(_pos_u("SPY"),)),
+    )
+    assert "correlation_guard" not in d.checks
+    assert d.approved is True
 
 
 # --------------------------------------------------------------------------- #

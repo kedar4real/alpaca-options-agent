@@ -217,6 +217,13 @@ def gather(
                                         cg.score_headlines(heads),
                                         adx=adx, adx_direction=adx_dir))
 
+    # -- basket correlation clusters (from the RSI closes; no extra fetch) --- #
+    try:
+        clusters = cg.correlation_clusters(closes_map)
+    except Exception as exc:  # noqa: BLE001
+        clusters = ()
+        errors.append(f"corr: {exc}")
+
     got_something = (
         bool(events) or vix is not None or vix_proxy is not None
         or any(t.headlines for t in tickers) or any(t.rsi is not None for t in tickers)
@@ -239,6 +246,7 @@ def gather(
         vix_vxv_ratio=ratio,
         panic_regime=panic_regime,
         macro_danger=macro_danger,
+        correlation_clusters=clusters,
     )
 
 

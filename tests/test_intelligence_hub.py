@@ -117,6 +117,29 @@ def test_adx_none_when_ohlc_fetch_fails_but_context_still_ok() -> None:
 
 
 # ======================================================================= #
+# Basket correlation clusters land on the context
+# ======================================================================= #
+def test_correlation_clusters_land_on_the_context() -> None:
+    # _yf_ok gives every symbol the same monotonic close series -> all correlated
+    mc = ih.gather(None, ["SPY", "QQQ", "IWM"], now=datetime(2026, 9, 1, tzinfo=UTC),
+                   calendar=_CAL, **_yf_ok())
+    assert mc.correlation_clusters == (frozenset({"IWM", "QQQ", "SPY"}),)
+    assert mc.cluster_for("SPY") == frozenset({"IWM", "QQQ", "SPY"})
+    assert "CORRELATED" in mc.synthesis()
+
+
+def test_no_correlation_cluster_when_closes_diverge() -> None:
+    def closes(_syms):
+        return {"SPY": [100 + i for i in range(20)],
+                "TLT": [50 + ((-1) ** i) for i in range(20)]}
+
+    mc = ih.gather(None, ["SPY", "TLT"], now=datetime(2026, 9, 1, tzinfo=UTC),
+                   calendar=_CAL, **_yf_ok(closes_fn=closes))
+    assert mc.correlation_clusters == ()
+    assert mc.cluster_for("SPY") == frozenset({"SPY"})
+
+
+# ======================================================================= #
 # Symmetry / fallback
 # ======================================================================= #
 def test_vix_yf_failure_falls_back_to_alpaca_proxy() -> None:

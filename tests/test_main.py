@@ -526,13 +526,14 @@ def _fake_executed_summary(symbol):
                            order_detail=f"1x {symbol} iron_condor", plan=plan, result=result)
 
 
-def _stub_context(monkeypatch, *, macro=False, priority=None):
+def _stub_context(monkeypatch, *, macro=False, priority=None, clusters=()):
     """Keep run_cycle offline: no real context_gatherer network calls."""
     from trading_agent.context_gatherer import MarketContext
     mc = MarketContext(
         as_of="2026-09-01T10:00:00+00:00", macro_events=(),
         macro_today_high_impact=macro, vix_proxy=17.0, vix_change_5d_pct=0.0,
         vix_note="calm", tickers=(), ok=True, errors=(),
+        correlation_clusters=tuple(clusters),
     )
     monkeypatch.setattr(agent, "_gather_market_context", lambda conn, config, now_et: mc)
     if priority is not None:
@@ -655,7 +656,7 @@ def test_run_cycle_debates_only_the_top_ranked_candidate(tmp_path, monkeypatch) 
                             legs=[SimpleNamespace(action="sell", right="put", symbol="P")],
                             quantity=1, net_credit=1.0, wing_width=4.0))
     monkeypatch.setattr(agent, "check_order",
-                        lambda o, a: SimpleNamespace(approved=True, blocks=[]))
+                        lambda o, a, **kw: SimpleNamespace(approved=True, blocks=[]))
 
     report = agent.run_cycle(_FakeConn(), session, cfg, now_et=None)
 
@@ -663,6 +664,41 @@ def test_run_cycle_debates_only_the_top_ranked_candidate(tmp_path, monkeypatch) 
     assert reviewed == ["SPY"]                      # the rest get the single-pass review
     qqq = next(d for d in report.decisions if "stand aside" in d.reason)
     assert "BULL" in qqq.debate and "JUDGE" in qqq.debate
+
+
+def test_run_cycle_threads_correlation_clusters_into_the_risk_check(tmp_path, monkeypatch) -> None:
+    cfg = Config(session_file=str(tmp_path / "s.json"), tickers=("SPY", "QQQ"))
+    session = Session(starting_equity=100_000.0)
+    _stub_context(monkeypatch, priority=("SPY", "QQQ"),
+                  clusters=(frozenset({"SPY", "QQQ"}),))
+    monkeypatch.setattr(agent, "get_market_snapshot", lambda symbol, creds=None: {"symbol": symbol})
+    monkeypatch.setattr(agent.risk_officer, "load_lessons", lambda *a, **k: [])
+    monkeypatch.setattr(agent.risk_officer, "review_trade",
+                        lambda o, s, a, *, timeout=None: SimpleNamespace(
+                            approved=False, ok=True, provider="featherless", thesis="n/a"))
+    monkeypatch.setattr(agent, "build_strategy_plan",
+                        lambda snap, today=None, context=None: SimpleNamespace(
+                            eligible=True, reason="ok", structure="iron_condor", regime="A",
+                            regime_reason="r", expiry=date(2026, 9, 4), net_credit=1.0,
+                            wing_width=4.0, suggested_contracts=1, symbol=snap.get("symbol"),
+                            legs=[SimpleNamespace(action="sell", right="put",
+                                                  contract=SimpleNamespace(symbol="P"))]))
+    monkeypatch.setattr(agent.executor_mod, "from_plan",
+                        lambda plan: SimpleNamespace(
+                            legs=[SimpleNamespace(action="sell", right="put", symbol="P")],
+                            quantity=1, net_credit=1.0, wing_width=4.0,
+                            underlying=getattr(plan, "symbol", None)))
+
+    seen: list = []
+
+    def spy_check(o, a, **kw):
+        seen.append(kw.get("correlation_clusters"))
+        return SimpleNamespace(approved=False, blocks=["stop here"], checks={})
+    monkeypatch.setattr(agent, "check_order", spy_check)
+
+    agent.run_cycle(_FakeConn(), session, cfg, now_et=None)
+
+    assert seen and seen[0] == (frozenset({"SPY", "QQQ"}),)
 
 
 def test_run_cycle_runs_self_correction_on_each_close(tmp_path, monkeypatch) -> None:

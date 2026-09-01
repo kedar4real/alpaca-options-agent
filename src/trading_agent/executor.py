@@ -85,6 +85,7 @@ def from_iron_condor_plan(plan: "IronCondorPlan") -> ProposedOrder:
         # The strategy already computed the true per-contract worst case; hand it
         # to risk_manager directly so gate 1 is correct for debit structures too.
         max_loss=plan.max_loss_per_contract,
+        underlying=getattr(plan, "symbol", None),
     )
 
 

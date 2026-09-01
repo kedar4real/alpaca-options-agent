@@ -13,7 +13,7 @@ agent. Companion to `PROJECT_STATE.md` (current architecture) and `DEVLOG.md`
 A **multi-ticker market-data layer**, a **regime-aware structure builder**, a
 **pre-trade risk manager**, a **gated order executor**, an **LLM second-opinion
 gate**, and the **autonomous loop** that drives them across a `SPY/QQQ/IWM/TLT`
-basket are built and tested — **306 offline tests** (the data path, the LLM
+basket are built and tested — **331 offline tests** (the data path, the LLM
 providers, the context layer, agent startup, and one live `run_cycle` that opened
 a QQQ condor are also verified against the Alpaca paper account):
 
@@ -460,7 +460,7 @@ At the same time, `data.py`'s chain pull was narrowed from the full chain to
 
 ## 6. Tests
 
-`pytest tests/` → **306 tests, all passing, fully offline** (no network / no API
+`pytest tests/` → **331 tests, all passing, fully offline** (no network / no API
 keys — the market calendar ships its data; the LLM providers, the news/VIX pulls
 and Alpaca are all mocked):
 

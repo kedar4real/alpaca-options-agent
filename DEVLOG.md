@@ -1,5 +1,41 @@
 # Dev Log
 
+## 2026-09-02 — Officer model swap + 3 alpha filters (5 commits)
+
+The **1.5% per-trade cap is byte-unchanged**; modular flow intact. 306 → **331 tests**.
+
+**1. risk_officer — 72B judge + QUANT CLARIFICATION (`fd91c61`).** The
+`Qwen2.5-7B` officer vetoed ~100% of trades (called VIX 16 "elevated", read
+contango as stress). `FEATHERLESS_MODEL` default → `Qwen/Qwen2.5-72B-Instruct`
+(non-gated; Meta Llama 70B needs HF OAuth). `_call_featherless` now caps
+`max_tokens` (`OFFICER_MAX_TOKENS`, 1024). `build_prompt` gains a
+`### QUANT CLARIFICATION` block: **contango is NOT a veto trigger, only
+backwardation is; a neutral RSI (~40-60) is IDEAL for range-bound premium
+selling.** Live: first cycle after → APPROVED + executed QQQ and IWM condors.
+
+**2. strategy — IV-relative delta (`e2ef454`).** Inverted the vol→delta map:
+high IV → `DYN_DELTA_HIGH_IV` 0.15 (further OTM, more PoP); low/crushed IV →
+`DYN_DELTA_LOW_IV` 0.25 (closer, keep credit); 0.225 unchanged in the normal
+band. `DYN_DELTA_LOW/HIGH` renamed `_LOW_IV/_HIGH_IV`.
+
+**3. strategy — ADX trend-strength filter (`2e61e0d`).** `context_gatherer`
+gains `wilder_adx` / `classify_adx`; `intelligence_hub.yf_ohlc` pulls the OHLC
+(one call); per-ticker `adx` / `adx_direction` on `MarketContext`. In
+`select_regime`, after the PANIC/DANGER override: **ADX ≥ 25 + base iron_condor
+→ override to a directional credit spread (Bull Put up / Bear Call down), no
+clear side → stand aside. ADX < 20 → condor as-is. 20-25 → fall back to the
+Kaufman ER.** yfinance OHLC failure → `adx` None → byte-identical ER logic.
+
+**4. risk_manager — correlation guard (`32e249f`).**
+`context_gatherer.correlation_clusters(closes_map)` — union-find over the
+pairwise 10-day return-correlation graph, groups of ≥2 names ≥ 0.8. On
+`MarketContext.correlation_clusters` (+ `cluster_for()`), from the RSI closes
+(no extra fetch); `synthesis()` shows `CORRELATED (>0.8, 10d): {SPY,QQQ,IWM}`.
+**Gate 4b:** if the order's `underlying` is in a cluster that already holds an
+open position, block it — the cluster gets ONE slot toward the 3-position cap.
+No clusters → unchanged. `ProposedOrder.underlying` / `OpenPosition.underlying`
+carry the ticker; `evaluate_new_trade` threads the clusters into `check_order`.
+
 ## 2026-09-01 — Quantamental upgrade (4 modules, 4 commits)
 
 Built on the Contextual Intelligence layer below. **The 1.5% per-trade cap is

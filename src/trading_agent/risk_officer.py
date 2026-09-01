@@ -28,6 +28,7 @@ No network in tests: pass a fake ``featherless_client`` and/or a fake ``session`
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -96,7 +97,8 @@ class OfficerReview:
     ok: bool                    # False => fail-safe VETO, not a real judgment
     raw_response: str = ""      # full model output (empty on transport failure)
     error: str | None = None    # exception / parse-failure detail
-    provider: str = ""          # "featherless" | "ollama" | "none"
+    provider: str = ""          # "featherless" | "ollama" | "none" | "debate/…"
+    debate: dict | None = None  # {"bull":…, "bear":…, "judge_raw":…, "provider":…}
 
     def describe(self) -> str:
         verdict = "APPROVE" if self.approved else "VETO"
@@ -104,11 +106,30 @@ class OfficerReview:
         via = f" via {self.provider}" if self.provider else ""
         return f"risk_officer [{self.model}]{via} {verdict}{tag}\n  thesis: {self.thesis}"
 
+    def transcript(self) -> str:
+        """The full Bull/Bear/Judge exchange, for the DecisionSummary + judges."""
+        if not self.debate:
+            return ""
+        d = self.debate
+        return (
+            f"--- BULL ---\n{d.get('bull', '')}\n\n"
+            f"--- BEAR ---\n{d.get('bear', '')}\n\n"
+            f"--- JUDGE ({d.get('provider', '?')}) ---\n{d.get('judge_raw', '')}"
+        )
+
 
 # --------------------------------------------------------------------------- #
 # Prompt
 # --------------------------------------------------------------------------- #
-def build_prompt(order: ProposedOrder, snapshot: dict, account: AccountState) -> str:
+def build_prompt(
+    order: ProposedOrder,
+    snapshot: dict,
+    account: AccountState,
+    *,
+    bull_case: str | None = None,
+    bear_case: str | None = None,
+    lessons: list[str] | None = None,
+) -> str:
     regime = snapshot.get("iv_regime")
     mode = getattr(regime, "mode", "unknown")
     regime_reason = getattr(regime, "reason", "n/a")
@@ -131,6 +152,21 @@ def build_prompt(order: ProposedOrder, snapshot: dict, account: AccountState) ->
     )
 
     macro_context = (snapshot.get("market_context") or "").strip() or "No Context Available"
+
+    extra = ""
+    if bull_case is not None or bear_case is not None:
+        extra += (
+            f"\n### DEBATE\nThe Bull agent argued FOR this trade:\n{bull_case or '(none)'}\n\n"
+            f"The Bear agent argued AGAINST it:\n{bear_case or '(none)'}\n\n"
+            f"You are the JUDGE. Weigh both cases against the data above and the "
+            f"lessons below, then deliver the verdict.\n"
+        )
+    if lessons:
+        joined = "\n".join(f"  - {ln}" for ln in lessons[:12])
+        extra += (
+            f"\n### LESSONS LEARNED (from this agent's own closed trades — heed them)\n"
+            f"{joined}\n"
+        )
 
     return f"""You are the risk officer for an automated multi-ticker options trading agent.
 A proposed trade has ALREADY passed the agent's hard risk limits (incl. the 1.5%
@@ -185,7 +221,7 @@ or
 
 VERDICT: VETO
 THESIS: <2-3 sentences>
-"""
+{extra}"""
 
 
 # --------------------------------------------------------------------------- #
@@ -375,6 +411,151 @@ def review_trade(
         provider="none",
     )
     log.error("risk_officer NO PROVIDER SUCCEEDED -> VETO  %s", review.error)
+    return review
+
+
+# --------------------------------------------------------------------------- #
+# Multi-agent debate — Bull / Bear / Judge
+# --------------------------------------------------------------------------- #
+DEFAULT_LESSONS_PATH = str(_REPO_ROOT / "lessons_learned.json")
+
+
+def load_lessons(path: str | None = None, *, limit: int = 12) -> list[str]:
+    """The agent's own 'lessons learned' (written by ``post_trade_analysis``).
+    Missing / unreadable file -> ``[]`` (the debate just runs without them)."""
+    p = Path(path or DEFAULT_LESSONS_PATH)
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (FileNotFoundError, ValueError, OSError):
+        return []
+    items = data.get("lessons", data) if isinstance(data, dict) else data
+    out = [str(x.get("lesson") if isinstance(x, dict) else x).strip()
+           for x in (items or [])]
+    return [x for x in out if x][-limit:]
+
+
+def build_advocate_prompt(
+    order: ProposedOrder, snapshot: dict, account: AccountState, *, side: str
+) -> str:
+    """One side of the debate. ``side`` is 'bull' or 'bear'. No verdict — just the
+    strongest 3-4 sentence argument for that side."""
+    base = build_prompt(order, snapshot, account)
+    if side == "bull":
+        role = (
+            "You are the BULL. In 3-4 sentences make the STRONGEST case FOR taking "
+            "this trade: premium richness, regime fit, edge, why the risk is "
+            "acceptable. Do NOT give a verdict or use the word VERDICT."
+        )
+    else:
+        role = (
+            "You are the BEAR. In 3-4 sentences make the STRONGEST case AGAINST "
+            "this trade: macro danger, VIX term structure, RSI extremes, tail risk, "
+            "poor risk/reward. Do NOT give a verdict or use the word VERDICT."
+        )
+    return f"{role}\n\n{base}"
+
+
+def _llm_raw(
+    prompt: str,
+    *,
+    fl_client,
+    fl_key: str,
+    fl_model: str,
+    fl_base: str,
+    ol_host: str,
+    ol_model: str,
+    ol_timeout: float,
+    session,
+) -> tuple[str, str]:
+    """Featherless -> Ollama for a single call. Returns ``(text, provider)``;
+    raises ``RuntimeError`` only if BOTH providers fail."""
+    errs = []
+    if fl_client is not None or fl_key:
+        try:
+            client = fl_client or _build_featherless_client(fl_key, fl_base)
+            text = _call_featherless(client, fl_model, prompt)
+            if text:
+                return text, "featherless"
+            errs.append("featherless: empty")
+        except Exception as exc:  # noqa: BLE001
+            errs.append(f"featherless: {type(exc).__name__}: {exc}")
+    try:
+        sess = session if session is not None else requests.Session()
+        text = _post_ollama(sess, ol_host, ol_model, prompt, ol_timeout)
+        if text:
+            return text, "ollama"
+        errs.append("ollama: empty")
+    except Exception as exc:  # noqa: BLE001
+        errs.append(f"ollama: {type(exc).__name__}: {exc}")
+    raise RuntimeError("; ".join(errs))
+
+
+def debate_review(
+    order: ProposedOrder,
+    snapshot: dict,
+    account: AccountState,
+    *,
+    lessons: list[str] | None = None,
+    featherless_api_key: str | None = None,
+    featherless_model: str | None = None,
+    featherless_base_url: str | None = None,
+    featherless_client=None,
+    host: str | None = None,
+    model: str | None = None,
+    timeout: float | None = None,
+    session=None,
+) -> OfficerReview:
+    """Three-agent debate: a Bull argues for the trade, a Bear against, and a
+    Judge (given both cases + the MarketContext + the lessons learned) delivers
+    the APPROVE/VETO. Same drop-in contract as :func:`review_trade`; the full
+    transcript is on ``OfficerReview.debate``. A Judge failure on BOTH providers
+    is a fail-safe VETO; a failed advocate just degrades to '(unavailable)'."""
+    _ensure_env_loaded()
+    fl_key = (featherless_api_key if featherless_api_key is not None
+              else os.environ.get("FEATHERLESS_API_KEY", ""))
+    fl_model = featherless_model or os.environ.get("FEATHERLESS_MODEL", DEFAULT_FEATHERLESS_MODEL)
+    fl_base = featherless_base_url or os.environ.get("FEATHERLESS_BASE_URL", DEFAULT_FEATHERLESS_BASE_URL)
+    ol_host = host or DEFAULT_HOST
+    ol_model = model or DEFAULT_MODEL
+    ol_timeout = DEFAULT_TIMEOUT if timeout is None else timeout
+    if lessons is None:
+        lessons = load_lessons()
+
+    call_kw = dict(fl_client=featherless_client, fl_key=fl_key, fl_model=fl_model,
+                   fl_base=fl_base, ol_host=ol_host, ol_model=ol_model,
+                   ol_timeout=ol_timeout, session=session)
+
+    def _advocate(side: str) -> str:
+        try:
+            text, prov = _llm_raw(build_advocate_prompt(order, snapshot, account, side=side), **call_kw)
+            log.info("risk_officer debate %s (%s):\n%s", side.upper(), prov, text)
+            return text.strip()
+        except Exception as exc:  # noqa: BLE001 - a missing side is not fatal
+            log.warning("risk_officer debate %s unavailable: %s", side.upper(), exc)
+            return f"({side} case unavailable — {exc})"
+
+    bull = _advocate("bull")
+    bear = _advocate("bear")
+
+    judge_prompt = build_prompt(order, snapshot, account,
+                                bull_case=bull, bear_case=bear, lessons=lessons)
+    try:
+        judge_raw, prov = _llm_raw(judge_prompt, **call_kw)
+    except Exception as exc:  # noqa: BLE001 - Judge down on both providers -> VETO
+        log.error("risk_officer debate JUDGE failed on all providers -> VETO  %s", exc)
+        return OfficerReview(
+            approved=False,
+            thesis=f"debate judge unreachable ({exc}); fail-safe VETO",
+            model=f"{fl_model} / {ol_model}", ok=False, provider="none",
+            error=str(exc),
+            debate={"bull": bull, "bear": bear, "judge_raw": "", "provider": "none"},
+        )
+
+    review = parse_review(judge_raw, fl_model)
+    review.provider = f"debate/{prov}"
+    review.debate = {"bull": bull, "bear": bear, "judge_raw": judge_raw, "provider": prov}
+    log.info("risk_officer debate JUDGE (%s) verdict=%s\n--- raw ---\n%s",
+             prov, "APPROVE" if review.approved else "VETO", judge_raw)
     return review
 
 

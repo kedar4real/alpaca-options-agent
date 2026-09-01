@@ -471,6 +471,103 @@ def test_warm_up_returns_false_on_failure_without_raising() -> None:
     assert ro.warm_up(session=sess) is False
 
 
+# --------------------------------------------------------------------------- #
+# Multi-agent debate (Bull / Bear / Judge)
+# --------------------------------------------------------------------------- #
+class SeqCompletions:
+    """Returns the next content in a list on each .create() call."""
+
+    def __init__(self, contents):
+        self._contents = list(contents)
+        self.calls = []
+
+    def create(self, *, model, messages, **kw):
+        self.calls.append({"model": model, "messages": messages})
+        c = self._contents[len(self.calls) - 1] if len(self.calls) <= len(self._contents) else ""
+        if isinstance(c, Exception):
+            raise c
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=c))])
+
+
+class SeqFeatherless:
+    def __init__(self, contents):
+        self._completions = SeqCompletions(contents)
+        self.chat = SimpleNamespace(completions=self._completions)
+
+    @property
+    def calls(self):
+        return self._completions.calls
+
+
+def test_debate_runs_bull_bear_judge_and_the_judge_decides() -> None:
+    fl = SeqFeatherless([
+        "The premium is rich and the book is empty — strong risk/reward.",   # bull
+        "A CPI print lands in 36h and RSI is stretched — tail risk is real.",  # bear
+        "VERDICT: APPROVE\nTHESIS: On balance the edge outweighs the event risk.",  # judge
+    ])
+    r = ro.debate_review(order(), snapshot(), account(), featherless_client=fl)
+    assert len(fl.calls) == 3
+    assert r.approved is True and r.ok is True
+    assert r.provider.startswith("debate")
+    assert r.debate["bull"].startswith("The premium is rich")
+    assert r.debate["bear"].startswith("A CPI print")
+    assert "APPROVE" in r.debate["judge_raw"]
+    t = r.transcript()
+    assert "BULL" in t and "BEAR" in t and "JUDGE" in t
+
+
+def test_debate_judge_veto_is_respected() -> None:
+    fl = SeqFeatherless([
+        "bull case", "bear case",
+        "VERDICT: VETO\nTHESIS: Macro danger dominates; stand aside.",
+    ])
+    r = ro.debate_review(order(), snapshot(), account(), featherless_client=fl)
+    assert r.approved is False and r.ok is True
+
+
+def test_debate_tolerates_a_failed_advocate() -> None:
+    fl = SeqFeatherless([
+        RuntimeError("bull call 500"),                       # bull fails
+        "bear says stand aside",
+        "VERDICT: APPROVE\nTHESIS: bear concerns look overstated.",
+    ])
+    # ollama is the per-call fallback; make it fail too so the bull truly degrades
+    sess = FakeSession(exc=requests.ConnectionError("no ollama"))
+    r = ro.debate_review(order(), snapshot(), account(), featherless_client=fl, session=sess)
+    assert r.ok is True and r.approved is True
+    assert "unavailable" in r.debate["bull"].lower()
+
+
+def test_debate_judge_failure_on_both_providers_is_fail_safe_veto() -> None:
+    fl = SeqFeatherless([
+        "bull case", "bear case", RuntimeError("judge call 503"),
+    ])
+    sess = FakeSession(exc=requests.ConnectionError("no ollama"))
+    r = ro.debate_review(order(), snapshot(), account(), featherless_client=fl, session=sess)
+    assert r.approved is False and r.ok is False
+    assert r.provider == "none"
+    assert r.debate is not None                    # transcript still captured
+
+
+def test_judge_prompt_carries_the_debate_and_lessons() -> None:
+    fl = SeqFeatherless([
+        "bull", "bear", "VERDICT: VETO\nTHESIS: no.",
+    ])
+    ro.debate_review(
+        order(), snapshot(), account(), featherless_client=fl,
+        lessons=["Sold too close to a CPI print; avoid event weeks."],
+    )
+    judge_prompt = fl.calls[2]["messages"][0]["content"]
+    assert "### DEBATE" in judge_prompt
+    assert "bull" in judge_prompt and "bear" in judge_prompt
+    assert "### LESSONS LEARNED" in judge_prompt
+    assert "CPI print" in judge_prompt
+
+
+def test_load_lessons_returns_empty_list_when_file_missing(tmp_path) -> None:
+    assert ro.load_lessons(path=str(tmp_path / "nope.json")) == []
+
+
 def test_warm_up_returns_false_on_http_error() -> None:
     sess = FakeSession(resp=FakeResp(status=404, payload={"error": "model not found"}))
     assert ro.warm_up(session=sess) is False

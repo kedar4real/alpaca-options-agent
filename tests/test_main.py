@@ -616,6 +616,55 @@ def test_run_cycle_gathers_context_logs_it_and_threads_the_macro_guard(tmp_path,
     assert any("MACRO GUARD ACTIVE" in r.message for r in caplog.records)
 
 
+def test_run_cycle_debates_only_the_top_ranked_candidate(tmp_path, monkeypatch) -> None:
+    cfg = Config(session_file=str(tmp_path / "s.json"), tickers=("SPY", "QQQ"))
+    session = Session(starting_equity=100_000.0)
+    _stub_context(monkeypatch, priority=("QQQ", "SPY"))
+    monkeypatch.setattr(agent, "get_market_snapshot", lambda symbol, creds=None: {"symbol": symbol})
+    monkeypatch.setattr(agent.risk_officer, "load_lessons", lambda *a, **k: [])
+
+    debated: list[str] = []
+
+    def fake_debate(o, s, a, *, timeout=None, lessons=None):
+        debated.append(s["symbol"])
+        return SimpleNamespace(approved=False, ok=True, provider="debate/featherless",
+                               thesis="stand aside",
+                               transcript=lambda: "--- BULL ---\nx\n--- BEAR ---\ny\n--- JUDGE ---\nVETO")
+    monkeypatch.setattr(agent.risk_officer, "debate_review", fake_debate)
+
+    reviewed: list[str] = []
+
+    def fake_review(o, s, a, *, timeout=None):
+        reviewed.append(s["symbol"])
+        return SimpleNamespace(approved=False, ok=True, provider="featherless", thesis="nope")
+    monkeypatch.setattr(agent.risk_officer, "review_trade", fake_review)
+
+    def fake_eval(snapshot, account, *, config, today=None, market_context="", context=None, **kw):
+        return agent.evaluate_new_trade(snapshot, account, config=config, today=today,
+                                        market_context=market_context, context=context, **kw)
+    monkeypatch.setattr(agent, "evaluate_cycle_decision", fake_eval)
+    monkeypatch.setattr(agent, "build_strategy_plan",
+                        lambda snap, today=None, context=None: SimpleNamespace(
+                            eligible=True, reason="ok", structure="iron_condor", regime="A",
+                            regime_reason="r", expiry=date(2026, 9, 4), net_credit=1.0,
+                            wing_width=4.0, suggested_contracts=1,
+                            legs=[SimpleNamespace(action="sell", right="put",
+                                                  contract=SimpleNamespace(symbol="P"))]))
+    monkeypatch.setattr(agent.executor_mod, "from_plan",
+                        lambda plan: SimpleNamespace(
+                            legs=[SimpleNamespace(action="sell", right="put", symbol="P")],
+                            quantity=1, net_credit=1.0, wing_width=4.0))
+    monkeypatch.setattr(agent, "check_order",
+                        lambda o, a: SimpleNamespace(approved=True, blocks=[]))
+
+    report = agent.run_cycle(_FakeConn(), session, cfg, now_et=None)
+
+    assert debated == ["QQQ"]                       # only the #1 ranked ticker
+    assert reviewed == ["SPY"]                      # the rest get the single-pass review
+    qqq = next(d for d in report.decisions if "stand aside" in d.reason)
+    assert "BULL" in qqq.debate and "JUDGE" in qqq.debate
+
+
 def test_run_cycle_context_failure_is_non_fatal(tmp_path, monkeypatch) -> None:
     cfg = Config(session_file=str(tmp_path / "s.json"), tickers=("SPY",))
     session = Session(starting_equity=100_000.0)

@@ -127,6 +127,7 @@ class Config:
     activity_log_file: str = "logs/agent_activity.log"
     heartbeat_minutes: int = 60                 # cadence of the hourly HEARTBEAT line
     gap_alert_pct: float = 0.5                  # pre-market gap over this -> PRE-MARKET ALERT
+    debate_enabled: bool = True                 # run the Bull/Bear/Judge debate on the top pick
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -146,6 +147,8 @@ class Config:
             activity_log_file=os.environ.get("AGENT_ACTIVITY_LOG", "logs/agent_activity.log"),
             heartbeat_minutes=_env_int("AGENT_HEARTBEAT_MINUTES", 60),
             gap_alert_pct=_env_float("AGENT_GAP_ALERT_PCT", 0.5),
+            debate_enabled=os.environ.get("AGENT_DEBATE", "true").strip().lower()
+            not in ("0", "false", "no", "off"),
         )
 
 
@@ -542,6 +545,7 @@ class DecisionSummary:
     review: object = None
     result: object = None
     market_context: str = ""          # the synthesis string handed to the risk_officer
+    debate: str = ""                  # Bull/Bear/Judge transcript (top-ranked candidate)
 
     def render(self) -> str:
         head = {
@@ -599,8 +603,11 @@ def evaluate_new_trade(
         if call_log is not None:
             call_log.append(stage)
 
+    _debate_txt = ""
+
     def done(summary: DecisionSummary) -> DecisionSummary:
         summary.market_context = market_context
+        summary.debate = _debate_txt
         return summary
 
     # ---- 1. strategy ------------------------------------------------------- #
@@ -638,6 +645,7 @@ def evaluate_new_trade(
     }
     mark("risk_officer")
     review = review_fn(order, review_snapshot, account, timeout=config.review_timeout_s)
+    _debate_txt = getattr(review, "transcript", lambda: "")() or ""
     if not getattr(review, "approved", False):
         return done(DecisionSummary(
             True, "risk_officer", "vetoed",
@@ -924,14 +932,27 @@ def run_cycle(conn: AlpacaConnection, session: Session, config: Config, *,
         log.info("cycle priority order: %s", " > ".join(ordered))
 
     # 4. evaluate in priority order; exposure stays GLOBAL (rebuild `account`
-    #    after every open so the next ticker sees the updated count).
-    for symbol in ordered:
+    #    after every open so the next ticker sees the updated count). The
+    #    #1-ranked candidate gets the full Bull/Bear/Judge debate; the rest get
+    #    the single-pass review.
+    lessons = risk_officer.load_lessons() if config.debate_enabled else []
+
+    def _debate_fn(o, s, a, timeout=None):
+        return risk_officer.debate_review(o, s, a, timeout=timeout, lessons=lessons)
+
+    for i, symbol in enumerate(ordered):
+        kw = {}
+        if i == 0 and config.debate_enabled:
+            kw["review_fn"] = _debate_fn
         decision = evaluate_cycle_decision(
             snapshots[symbol], account, config=config, today=today,
-            market_context=ctx_str, context=market_context,
+            market_context=ctx_str, context=market_context, **kw,
         )
         decisions.append(decision)
         log.info("[%s] %s", symbol, decision.render())
+        if decision.debate:
+            offhours_log.info("DEBATE [%s]\n%s\n%s\n%s", symbol, "=" * 60,
+                              decision.debate, "=" * 60)
 
         if decision.outcome == "executed":
             opened.append(_record_opened(session, decision, now_iso))

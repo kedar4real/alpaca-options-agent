@@ -27,12 +27,29 @@ from .alpaca_trader import trading_sessions
 # --------------------------------------------------------------------------- #
 # Limits
 # --------------------------------------------------------------------------- #
-MAX_RISK_PER_TRADE_PCT = 0.015     # 1.5% of current equity
+MAX_RISK_PER_TRADE_PCT = 0.015     # 1.5% of current equity — the absolute cap
 DAILY_LOSS_HALT_PCT = 0.025        # 2.5% of starting equity
 TOTAL_DRAWDOWN_FLOOR_PCT = 0.05    # 5% of starting equity
 MAX_CONCURRENT_POSITIONS = 3
 EXPIRY_CLOSE_TRADING_DAYS = 1      # flag when this close to expiry
 CONTRACT_MULTIPLIER = 100
+
+# Macro guard: on a High-Impact macro day (FOMC / CPI / NFP) the caller sets
+# AccountState.risk_multiplier to this, so gate 1's *effective* cap is halved for
+# that cycle. It can only tighten — a multiplier is clamped to <= 1.0 in
+# check_order — so the 1.5% line above stays the source of truth.
+MACRO_RISK_REDUCTION = 0.5
+
+
+def is_macro_safe(*, macro_high_impact: bool) -> bool:
+    """False when a High-Impact macro event lands today. The caller then applies
+    :data:`MACRO_RISK_REDUCTION` to ``AccountState.risk_multiplier``."""
+    return not macro_high_impact
+
+
+def macro_risk_multiplier(*, macro_high_impact: bool) -> float:
+    """1.0 normally; :data:`MACRO_RISK_REDUCTION` on a High-Impact macro day."""
+    return MACRO_RISK_REDUCTION if macro_high_impact else 1.0
 
 
 # --------------------------------------------------------------------------- #
@@ -80,6 +97,7 @@ class AccountState:
     day_start_equity: float           # equity at the start of today's session
     open_positions: tuple[OpenPosition, ...] = ()
     trading_halted: bool = False      # sticky comp-level halt (persisted by caller)
+    risk_multiplier: float = 1.0      # macro guard: <1.0 tightens gate 1 for a cycle
 
 
 @dataclass
@@ -195,15 +213,19 @@ def check_order(order: ProposedOrder, account: AccountState) -> RiskDecision:
             f"{n_open} open positions >= max {MAX_CONCURRENT_POSITIONS} concurrent"
         )
 
-    # (1) max risk per trade
+    # (1) max risk per trade — the 1.5% cap. A macro-guard multiplier can only
+    #     tighten it (clamped to <= 1.0); it can never raise the ceiling.
     order_risk = order.risk_dollars
-    max_risk_allowed = MAX_RISK_PER_TRADE_PCT * account.current_equity
+    macro_mult = min(account.risk_multiplier, 1.0)
+    max_risk_allowed = MAX_RISK_PER_TRADE_PCT * account.current_equity * macro_mult
     ok = order_risk <= max_risk_allowed
     checks["max_risk_per_trade"] = ok
     if not ok:
+        note = "1.5% of current equity" if macro_mult == 1.0 else (
+            f"1.5% of current equity x {macro_mult:.2f} — macro guard"
+        )
         blocks.append(
-            f"trade risk ${order_risk:,.0f} > ${max_risk_allowed:,.0f} "
-            f"(1.5% of current equity)"
+            f"trade risk ${order_risk:,.0f} > ${max_risk_allowed:,.0f} ({note})"
         )
 
     return RiskDecision(

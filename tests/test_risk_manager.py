@@ -42,6 +42,7 @@ def account(
     day_start: float | None = None,
     positions: tuple[rm.OpenPosition, ...] = (),
     halted: bool = False,
+    risk_mult: float = 1.0,
 ) -> rm.AccountState:
     return rm.AccountState(
         starting_equity=starting,
@@ -49,6 +50,7 @@ def account(
         day_start_equity=current if day_start is None else day_start,
         open_positions=positions,
         trading_halted=halted,
+        risk_multiplier=risk_mult,
     )
 
 
@@ -77,6 +79,47 @@ def test_max_risk_per_trade_one_contract_over_is_blocked() -> None:
 def test_max_risk_per_trade_scales_with_current_equity() -> None:
     # cap tracks *current* equity, not starting
     d = rm.check_order(order(qty=5), account(90_000))  # cap now $1,350 < $1,500
+    assert d.checks["max_risk_per_trade"] is False
+
+
+# --------------------------------------------------------------------------- #
+# Gate 1 — macro guard (High-Impact day halves the per-trade cap)
+# --------------------------------------------------------------------------- #
+def test_is_macro_safe_predicate() -> None:
+    assert rm.is_macro_safe(macro_high_impact=False) is True
+    assert rm.is_macro_safe(macro_high_impact=True) is False
+
+
+def test_macro_risk_multiplier_is_half_on_a_high_impact_day() -> None:
+    assert rm.macro_risk_multiplier(macro_high_impact=False) == 1.0
+    assert rm.macro_risk_multiplier(macro_high_impact=True) == 0.5
+
+
+def test_default_account_risk_multiplier_is_one_and_unchanged_behaviour() -> None:
+    # a trade at exactly 1.5% still passes when no macro reduction is applied
+    d = rm.check_order(order(qty=5), account(100_000))
+    assert d.max_risk_allowed == 1_500.0 and d.approved is True
+
+
+def test_macro_day_halves_the_effective_cap_without_touching_the_constant() -> None:
+    before = rm.MAX_RISK_PER_TRADE_PCT
+    # 3 contracts * $300 = $900 : fine normally, blocked when the cap is halved to $750
+    ok = rm.check_order(order(qty=3), account(100_000))
+    assert ok.checks["max_risk_per_trade"] is True
+
+    macro = rm.check_order(order(qty=3), account(100_000, risk_mult=0.5))
+    assert macro.max_risk_allowed == 750.0
+    assert macro.checks["max_risk_per_trade"] is False
+    assert any("trade risk" in b for b in macro.blocks)
+    assert rm.MAX_RISK_PER_TRADE_PCT == before == 0.015     # constant is the source of truth
+
+
+def test_macro_reduction_never_loosens_a_limit() -> None:
+    # a multiplier > 1 is not something the agent sets, but the gate must still
+    # never allow more than the 1.5% line even if handed one
+    d = rm.check_order(order(qty=6), account(100_000, risk_mult=2.0))
+    # $1,800 risk vs a (wrongly) doubled $3,000 cap -> we clamp the multiplier at 1.0
+    assert d.max_risk_allowed == 1_500.0
     assert d.checks["max_risk_per_trade"] is False
 
 

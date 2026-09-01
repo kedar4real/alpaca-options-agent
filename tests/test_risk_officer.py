@@ -369,6 +369,29 @@ def test_prompt_handles_missing_snapshot_fields() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Prompt carries the MACRO CONTEXT section
+# --------------------------------------------------------------------------- #
+def test_prompt_has_macro_context_section_with_the_supplied_string() -> None:
+    fl = FakeFeatherless(content="VERDICT: APPROVE\nTHESIS: ok.")
+    ctx = "Macro: HIGH-IMPACT EVENT TODAY -> FOMC rate decision (2026-09-16) | VIX: 22.1 (VIXY proxy, +14.0% 5d; elevated / possibly spiking) | News SPY: rout | RSI SPY: 28.0 (oversold)"
+    ro.review_trade(order(), snapshot(market_context=ctx), account(), featherless_client=fl)
+    prompt = fl.calls[0]["messages"][0]["content"]
+    assert "### MACRO CONTEXT" in prompt
+    assert ctx in prompt
+    # the standing instruction about VIX spikes / Red-Folder events / RSI
+    assert "VETO" in prompt and "Red Folder" in prompt or "Red-Folder" in prompt
+    assert "overbought" in prompt.lower() and "oversold" in prompt.lower()
+
+
+def test_prompt_macro_context_fails_safe_to_no_context_available() -> None:
+    fl = FakeFeatherless(content="VERDICT: VETO\nTHESIS: no ctx.")
+    ro.review_trade(order(), snapshot(), account(), featherless_client=fl)  # no market_context key
+    prompt = fl.calls[0]["messages"][0]["content"]
+    assert "### MACRO CONTEXT" in prompt
+    assert "No Context Available" in prompt
+
+
+# --------------------------------------------------------------------------- #
 # Logging = evidence trail
 # --------------------------------------------------------------------------- #
 def test_logs_prompt_and_featherless_raw_response(caplog) -> None:

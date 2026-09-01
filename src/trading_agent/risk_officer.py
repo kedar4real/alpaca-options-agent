@@ -130,6 +130,8 @@ def build_prompt(order: ProposedOrder, snapshot: dict, account: AccountState) ->
         for leg in order.legs
     )
 
+    macro_context = (snapshot.get("market_context") or "").strip() or "No Context Available"
+
     return f"""You are the risk officer for an automated multi-ticker options trading agent.
 A proposed trade has ALREADY passed the agent's hard risk limits (incl. the 1.5%
 per-trade cap). Your job is the final judgment call: APPROVE only if the trade
@@ -162,9 +164,19 @@ CURRENT EXPOSURE (whole basket)
     day P&L         ${day_pnl:,.0f}
     total drawdown  ${drawdown:,.0f} from ${account.starting_equity:,.0f} start
 
+### MACRO CONTEXT
+    {macro_context}
+
+Analyze the Macro Events and VIX above. If VIX is spiking or a "Red Folder"
+(High-Impact) event is imminent, increase scrutiny or VETO short-volatility
+trades (iron condor / credit spread). Use the ticker's 14-day RSI to confirm it
+is not already overbought/oversold against the direction of a proposed
+directional Credit Spread before approving it. Treat "No Context Available" as a
+reason for caution, not confidence.
+
 Reason about (a) whether this structure fits the stated regime and the IV-RV
-spread, and (b) whether adding this exposure is prudent right now. Then answer
-EXACTLY in this format, nothing else:
+spread, (b) whether the macro backdrop makes adding this exposure imprudent right
+now. Then answer EXACTLY in this format, nothing else:
 
 VERDICT: APPROVE
 THESIS: <2-3 sentences>

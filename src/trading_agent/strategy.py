@@ -43,6 +43,13 @@ SHORT_DELTA_TARGET = 0.225
 SHORT_DELTA_MIN = 0.20
 SHORT_DELTA_MAX = 0.25
 
+# Dynamic delta scaling: the short (premium-capture) legs move with the vol level.
+# Low IV -> further OTM for safety; high IV -> closer to ATM to bank more premium.
+DYN_DELTA_LOW = 0.10
+DYN_DELTA_HIGH = 0.30
+DYN_IV_LOW = 0.15                # ATM IV at/below this is "low vol"
+DYN_IV_HIGH = 0.30              # ATM IV at/above this is "high vol"
+
 LONG_DELTA_TARGET = 0.10
 LONG_DELTA_TOLERANCE = 0.05   # accept 0.05-0.15 for the long leg's delta
 LONG_OTM_OFFSET = 5.0         # $ wing width when no ~0.10-delta strike is available
@@ -205,7 +212,39 @@ class RegimeDecision:
     direction: str | None = None      # "up" | "down" for Regime C
 
 
+SHORT_VOL_STRUCTURES = frozenset({REGIME_IRON_CONDOR, REGIME_BULL_PUT, REGIME_BEAR_CALL})
+
+
 def select_regime(
+    snapshot: dict,
+    *,
+    min_iv_rv: float = MIN_IV_RV_SPREAD,
+    low_iv_rv: float = LOW_IV_RV_SPREAD,
+    er_threshold: float = RANGE_BOUND_ER,
+    context=None,
+) -> RegimeDecision:
+    """Quantitative regime (see :func:`_quant_regime`), then a **contextual
+    override**: when the IntelligenceHub flags ``MACRO_DANGER`` or
+    ``PANIC_REGIME``, any *short-volatility* selection (iron condor / credit
+    spread) is vetoed and swapped for a **long strangle** — don't sell premium
+    into a known event or an inverted VIX curve. A quant "No trade" is left
+    alone: the override never manufactures a position."""
+    base = _quant_regime(
+        snapshot, min_iv_rv=min_iv_rv, low_iv_rv=low_iv_rv, er_threshold=er_threshold
+    )
+    flags = context.regime_flags() if context is not None else []
+    if flags and base.regime in SHORT_VOL_STRUCTURES:
+        return RegimeDecision(
+            REGIME_LONG_STRANGLE,
+            f"Regime OVERRIDE: {'/'.join(flags)} -> Long Strangle (vetoed short-vol {base.regime})",
+            f"{'/'.join(flags)} active — {base.reason}",
+            base.efficiency_ratio,
+            base.direction,
+        )
+    return base
+
+
+def _quant_regime(
     snapshot: dict,
     *,
     min_iv_rv: float = MIN_IV_RV_SPREAD,
@@ -316,11 +355,51 @@ def select_leg_near_delta(
     return min(graded, key=lambda c: abs(c.abs_delta - target))
 
 
-def select_short_leg(legs: list[OptionContract]) -> OptionContract | None:
-    """Contract nearest SHORT_DELTA_TARGET, preferring the 0.20-0.25 band."""
-    return select_leg_near_delta(
-        legs, SHORT_DELTA_TARGET, lo=SHORT_DELTA_MIN, hi=SHORT_DELTA_MAX
-    )
+def dynamic_short_delta(atm_iv: float | None) -> float:
+    """Volatility-adjusted short-leg delta target:
+
+    * ``atm_iv`` at/below ``DYN_IV_LOW``  -> ``DYN_DELTA_LOW``  (0.10, further OTM
+      for safety when there is little premium to reach for);
+    * ``atm_iv`` at/above ``DYN_IV_HIGH`` -> ``DYN_DELTA_HIGH`` (0.30, closer to
+      ATM to bank the fat premium);
+    * anything in the normal band (or ``None``) -> the unchanged
+      ``SHORT_DELTA_TARGET`` (0.225).
+    """
+    if atm_iv is None:
+        return SHORT_DELTA_TARGET
+    if atm_iv <= DYN_IV_LOW:
+        return DYN_DELTA_LOW
+    if atm_iv >= DYN_IV_HIGH:
+        return DYN_DELTA_HIGH
+    return SHORT_DELTA_TARGET
+
+
+def select_short_leg(
+    legs: list[OptionContract], *, target: float | None = None
+) -> OptionContract | None:
+    """Contract nearest the short-delta target. With no ``target`` it uses the
+    fixed ``SHORT_DELTA_TARGET`` and the 0.20-0.25 band; with a dynamic ``target``
+    it prefers a +/-0.05 band around it."""
+    if target is None:
+        return select_leg_near_delta(
+            legs, SHORT_DELTA_TARGET, lo=SHORT_DELTA_MIN, hi=SHORT_DELTA_MAX
+        )
+    return select_leg_near_delta(legs, target, lo=target - 0.05, hi=target + 0.05)
+
+
+def rank_basket(symbols, snapshots: dict, context) -> list[str]:
+    """Relative-value optimiser: order the basket best-first — richest IV-RV
+    spread wins, news-sentiment score breaks ties. Tickers with no spread sink to
+    the bottom. Mirrors ``context_gatherer.prioritize`` but lives with the
+    strategy so ``main`` asks the strategy layer "what should I trade first?"."""
+    def key(sym: str):
+        spread = (snapshots.get(sym) or {}).get("iv_rv_spread")
+        spread = spread if spread is not None else float("-inf")
+        tc = context.ticker(sym) if context is not None else None
+        news = getattr(tc, "news_score", 0) if tc else 0
+        return (spread, news)
+
+    return sorted(symbols, key=key, reverse=True)
 
 
 def select_long_leg(
@@ -403,11 +482,13 @@ def plan_iron_condor(
     puts = [c for c in at_expiry if c.right == "put"]
     calls = [c for c in at_expiry if c.right == "call"]
 
-    short_put = select_short_leg(puts)
-    short_call = select_short_leg(calls)
+    delta_target = dynamic_short_delta(getattr(iv_regime, "atm_iv", None))
+    tgt = None if delta_target == SHORT_DELTA_TARGET else delta_target
+    short_put = select_short_leg(puts, target=tgt)
+    short_call = select_short_leg(calls, target=tgt)
     if short_put is None or short_call is None:
         return result(
-            False, "could not find short legs near 0.20-0.25 delta", expiry=expiry
+            False, f"could not find short legs near {delta_target:.2f} delta", expiry=expiry
         )
 
     long_put, put_rule = select_long_leg(puts, short_put, "put")
@@ -579,9 +660,11 @@ def _plan_vertical(
         return result(False, "no listed expiry in the 1-3 trading-day window")
 
     legs_for_right = [c for c in contracts if c.expiry == expiry and c.right == right]
-    short = select_short_leg(legs_for_right)
+    delta_target = dynamic_short_delta(getattr(iv_regime, "atm_iv", None))
+    tgt = None if delta_target == SHORT_DELTA_TARGET else delta_target
+    short = select_short_leg(legs_for_right, target=tgt)
     if short is None:
-        return result(False, f"no short {right} near 0.20-0.25 delta", expiry=expiry)
+        return result(False, f"no short {right} near {delta_target:.2f} delta", expiry=expiry)
     long_leg, rule = select_long_leg(legs_for_right, short, right)
     if long_leg is None:
         return result(False, f"no protective long {right} ({rule})", expiry=expiry)
@@ -644,11 +727,13 @@ _PLAN_FOR_REGIME = {
 
 
 def build_strategy_plan(
-    snapshot: dict | None = None, *, today: date | None = None
+    snapshot: dict | None = None, *, today: date | None = None, context=None
 ) -> IronCondorPlan:
     """Detect the market regime for ``snapshot`` and build the matching structure.
 
     Regime A -> Iron Condor, B -> Long Strangle, C -> Bull Put / Bear Call.
+    ``context`` is the IntelligenceHub ``MarketContext``: a ``MACRO_DANGER`` /
+    ``PANIC_REGIME`` flag vetoes a short-vol selection and forces a long strangle.
     The regime choice is logged explicitly (picked up by the daily summary) and
     attached to the returned plan for the risk_officer prompt. The downstream
     flow is unchanged: this returns an ``IronCondorPlan`` that
@@ -656,11 +741,13 @@ def build_strategy_plan(
     """
     snap = snapshot or get_market_snapshot()
     symbol = snap.get("symbol") or snap.get("underlying") or "?"
-    decision = select_regime(snap)
+    decision = select_regime(snap, context=context)
 
     log.info(
         "REGIME [%s]: %s | %s", symbol, decision.label, decision.reason
     )
+    if "OVERRIDE" in decision.label:
+        log.warning("REGIME OVERRIDE [%s]: %s", symbol, decision.label)
 
     if decision.regime == REGIME_NONE:
         plan = IronCondorPlan(

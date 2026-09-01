@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from datetime import date
+from types import SimpleNamespace
 
 import pytest
 
@@ -15,6 +16,9 @@ EXPIRY = date(2026, 9, 8)          # a Tuesday; 1 trading day after Fri 2026-09-
 TODAY = date(2026, 9, 4)          # so nth_trading_day(1..3, TODAY) == 09-08 .. 09-10
 ELIGIBLE = IVRegime(0.20, None, "hackathon_static", True, "test-eligible")
 BLOCKED = IVRegime(0.10, None, "hackathon_static", False, "test-blocked")
+# Regime-C-style (IV not "elevated") but ATM IV in the normal band, so the short
+# leg still targets the fixed 0.225 delta rather than the low-IV 0.10 scaling.
+BLOCKED_MIDVOL = IVRegime(0.22, None, "hackathon_static", False, "test-blocked-midvol")
 
 
 def mk(right, strike, abs_delta, bid, ask, expiry=EXPIRY):
@@ -346,7 +350,7 @@ def _rich_call_ladder():
 
 def test_plan_bull_put_is_a_put_credit_spread() -> None:
     plan = s.plan_bull_put(
-        _rich_put_ladder(), underlying_price=770.0, iv_regime=BLOCKED, today=TODAY
+        _rich_put_ladder(), underlying_price=770.0, iv_regime=BLOCKED_MIDVOL, today=TODAY
     )
     assert plan.eligible is True and plan.structure == "bull_put"
     assert [(lg.action, lg.right) for lg in plan.legs] == [("sell", "put"), ("buy", "put")]
@@ -360,7 +364,7 @@ def test_plan_bull_put_is_a_put_credit_spread() -> None:
 
 def test_plan_bear_call_is_a_call_credit_spread() -> None:
     plan = s.plan_bear_call(
-        _rich_call_ladder(), underlying_price=770.0, iv_regime=BLOCKED, today=TODAY
+        _rich_call_ladder(), underlying_price=770.0, iv_regime=BLOCKED_MIDVOL, today=TODAY
     )
     assert plan.eligible is True and plan.structure == "bear_call"
     assert [(lg.action, lg.right) for lg in plan.legs] == [("sell", "call"), ("buy", "call")]
@@ -404,3 +408,74 @@ def test_build_strategy_plan_no_regime_returns_ineligible(caplog) -> None:
         plan = s.build_strategy_plan(snap, today=TODAY)
     assert plan.eligible is False and plan.structure == s.REGIME_NONE
     assert "no tradeable regime" in plan.reason
+
+
+# =========================================================================== #
+# Quant enhancement 1 — dynamic delta scaling
+# =========================================================================== #
+def test_dynamic_short_delta_scales_with_iv() -> None:
+    assert s.dynamic_short_delta(None) == s.SHORT_DELTA_TARGET      # no IV -> unchanged
+    assert s.dynamic_short_delta(0.10) == pytest.approx(s.DYN_DELTA_LOW)    # low IV -> 0.10
+    assert s.dynamic_short_delta(0.40) == pytest.approx(s.DYN_DELTA_HIGH)   # high IV -> 0.30
+    mid = s.dynamic_short_delta((s.DYN_IV_LOW + s.DYN_IV_HIGH) / 2)
+    assert s.DYN_DELTA_LOW < mid < s.DYN_DELTA_HIGH                 # interpolated between
+
+
+def test_select_short_leg_accepts_a_dynamic_target() -> None:
+    calls = [mk("call", 775, 0.10, 0.9, 1.0), mk("call", 772, 0.20, 1.9, 2.0),
+             mk("call", 769, 0.30, 3.4, 3.5)]
+    assert s.select_short_leg(calls, target=0.30).abs_delta == 0.30   # closer to ATM
+    assert s.select_short_leg(calls, target=0.10).abs_delta == 0.10   # further OTM
+
+
+# =========================================================================== #
+# Quant enhancement 2 — relative-value ranking
+# =========================================================================== #
+def test_rank_basket_orders_by_spread_then_news() -> None:
+    snaps = {"SPY": {"iv_rv_spread": 0.03}, "QQQ": {"iv_rv_spread": 0.06},
+             "IWM": {"iv_rv_spread": 0.06}, "TLT": {"iv_rv_spread": None}}
+    ctx = SimpleNamespace(ticker=lambda sym: {
+        "SPY": SimpleNamespace(news_score=0), "QQQ": SimpleNamespace(news_score=-2),
+        "IWM": SimpleNamespace(news_score=3), "TLT": SimpleNamespace(news_score=0),
+    }[sym])
+    assert s.rank_basket(["SPY", "QQQ", "IWM", "TLT"], snaps, ctx) == ["IWM", "QQQ", "SPY", "TLT"]
+
+
+# =========================================================================== #
+# Quant enhancement 3 — MACRO_DANGER / PANIC_REGIME force long volatility
+# =========================================================================== #
+def _ctx(*, danger=False, panic=False):
+    flags = (["MACRO_DANGER"] if danger else []) + (["PANIC_REGIME"] if panic else [])
+    return SimpleNamespace(macro_danger=danger, panic_regime=panic,
+                           regime_flags=lambda: flags)
+
+
+def test_panic_regime_overrides_iron_condor_to_long_strangle() -> None:
+    d = s.select_regime(
+        _snap(atm_iv=0.22, spread=0.05, iv_eligible=True, closes=CHOP),
+        context=_ctx(panic=True),
+    )
+    assert d.regime == s.REGIME_LONG_STRANGLE
+    assert "OVERRIDE" in d.label and "PANIC_REGIME" in d.label
+
+
+def test_macro_danger_overrides_a_credit_spread_to_long_strangle() -> None:
+    d = s.select_regime(
+        _snap(atm_iv=0.10, spread=-0.06, iv_eligible=False, closes=UP),   # base = bull_put
+        context=_ctx(danger=True),
+    )
+    assert d.regime == s.REGIME_LONG_STRANGLE
+    assert "MACRO_DANGER" in d.label
+
+
+def test_context_without_flags_leaves_the_regime_untouched() -> None:
+    base = s.select_regime(_snap(atm_iv=0.22, spread=0.05, iv_eligible=True, closes=CHOP))
+    withctx = s.select_regime(_snap(atm_iv=0.22, spread=0.05, iv_eligible=True, closes=CHOP),
+                              context=_ctx())
+    assert withctx.regime == base.regime == s.REGIME_IRON_CONDOR
+
+
+def test_panic_does_not_manufacture_a_trade_when_there_is_no_regime() -> None:
+    d = s.select_regime(_snap(atm_iv=0.14, spread=0.0, iv_eligible=False, closes=UP),
+                        context=_ctx(panic=True, danger=True))
+    assert d.regime == s.REGIME_NONE

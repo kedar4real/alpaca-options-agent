@@ -536,7 +536,7 @@ def _stub_context(monkeypatch, *, macro=False, priority=None):
     )
     monkeypatch.setattr(agent, "_gather_market_context", lambda conn, config, now_et: mc)
     if priority is not None:
-        monkeypatch.setattr(agent.context_gatherer, "prioritize",
+        monkeypatch.setattr(agent, "rank_basket",
                             lambda symbols, snaps, ctx: list(priority))
     return mc
 

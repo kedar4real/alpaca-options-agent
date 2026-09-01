@@ -79,7 +79,7 @@ from .risk_manager import (
     flag_expiring_positions,
     macro_risk_multiplier,
 )
-from .strategy import build_strategy_plan
+from .strategy import build_strategy_plan, rank_basket
 from . import executor as executor_mod
 
 # Structures whose entry cost is a net debit (max loss = premium paid), so
@@ -572,6 +572,7 @@ def evaluate_new_trade(
     config: Config,
     today: date | None = None,
     market_context: str = "",
+    context=None,
     plan_fn=None,
     to_order_fn=None,
     check_fn=None,
@@ -584,10 +585,11 @@ def evaluate_new_trade(
 
     The ``*_fn`` hooks default to the real modules; tests inject spies. Any
     stage a spy is called is appended to ``call_log`` when provided.
-    ``market_context`` is the context_gatherer synthesis string — forwarded into
-    the risk_officer prompt and stamped on every returned summary.
+    ``market_context`` is the synthesis string (into the risk_officer prompt +
+    every summary); ``context`` is the ``MarketContext`` object (its
+    MACRO_DANGER / PANIC_REGIME flags steer ``build_strategy_plan``).
     """
-    plan_fn = plan_fn or (lambda snap, today=None: build_strategy_plan(snap, today=today))
+    plan_fn = plan_fn or (lambda snap, today=None: build_strategy_plan(snap, today=today, context=context))
     to_order_fn = to_order_fn or executor_mod.from_plan
     check_fn = check_fn or check_order
     review_fn = review_fn or risk_officer.review_trade
@@ -667,6 +669,7 @@ def evaluate_cycle_decision(
     config: Config,
     today: date | None = None,
     market_context: str = "",
+    context=None,
     **pipeline_kwargs,
 ) -> DecisionSummary:
     """Prechecks (halt, capacity) then the pipeline. Always returns a summary."""
@@ -683,7 +686,8 @@ def evaluate_cycle_decision(
         )
 
     return evaluate_new_trade(snapshot, account, config=config, today=today,
-                              market_context=market_context, **pipeline_kwargs)
+                              market_context=market_context, context=context,
+                              **pipeline_kwargs)
 
 
 # --------------------------------------------------------------------------- #
@@ -915,7 +919,7 @@ def run_cycle(conn: AlpacaConnection, session: Session, config: Config, *,
                 market_context=ctx_str,
             ))
 
-    ordered = context_gatherer.prioritize(list(snapshots), snapshots, market_context)
+    ordered = rank_basket(list(snapshots), snapshots, market_context)
     if ordered:
         log.info("cycle priority order: %s", " > ".join(ordered))
 
@@ -923,7 +927,8 @@ def run_cycle(conn: AlpacaConnection, session: Session, config: Config, *,
     #    after every open so the next ticker sees the updated count).
     for symbol in ordered:
         decision = evaluate_cycle_decision(
-            snapshots[symbol], account, config=config, today=today, market_context=ctx_str
+            snapshots[symbol], account, config=config, today=today,
+            market_context=ctx_str, context=market_context,
         )
         decisions.append(decision)
         log.info("[%s] %s", symbol, decision.render())

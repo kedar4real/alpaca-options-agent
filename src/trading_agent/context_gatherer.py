@@ -44,6 +44,9 @@ MACRO_HORIZON_HOURS = 48
 RSI_PERIOD = 14
 RSI_OVERBOUGHT = 70.0
 RSI_OVERSOLD = 30.0
+ADX_PERIOD = 14
+ADX_TREND = 25.0                  # ADX at/above this => strong trend (disable condors)
+ADX_RANGE = 20.0                 # ADX below this => dead market (condors welcome)
 VIX_PROXY_SYMBOL = "VIXY"          # short-term VIX-futures ETF (proxy for ^VIX)
 VIX_SPIKE_5D_PCT = 10.0           # +this much over ~5 sessions => "possibly spiking"
 NEWS_LOOKBACK_DAYS = 5
@@ -171,6 +174,76 @@ def classify_rsi(rsi: float | None) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# Trend strength — Wilder ADX (+ directional bias from +DI / -DI)
+# --------------------------------------------------------------------------- #
+def wilder_adx(high, low, close, period: int = ADX_PERIOD):
+    """Wilder Average Directional Index from a high/low/close series (oldest
+    first). Returns ``(adx, direction)`` where ``direction`` is ``"up"`` /
+    ``"down"`` / ``None`` (from the final +DI vs -DI reading).
+
+    ADX measures *trend strength*, not direction: a steady one-way move ->
+    ADX near 100; a choppy range -> ADX in the teens. Returns ``(None, None)``
+    with fewer than ``2 * period + 1`` bars."""
+    h = [float(x) for x in (high or []) if x is not None]
+    lo = [float(x) for x in (low or []) if x is not None]
+    c = [float(x) for x in (close or []) if x is not None]
+    n = min(len(h), len(lo), len(c))
+    if n < 2 * period + 1:
+        return None, None
+    h, lo, c = h[-n:], lo[-n:], c[-n:]
+
+    tr, plus_dm, minus_dm = [], [], []
+    for i in range(1, n):
+        up_move = h[i] - h[i - 1]
+        down_move = lo[i - 1] - lo[i]
+        plus_dm.append(up_move if (up_move > down_move and up_move > 0) else 0.0)
+        minus_dm.append(down_move if (down_move > up_move and down_move > 0) else 0.0)
+        tr.append(max(h[i] - lo[i], abs(h[i] - c[i - 1]), abs(lo[i] - c[i - 1])))
+
+    def _wilder(series):
+        # first smoothed value = sum of the first `period`; then s -= s/period; s += x
+        s = sum(series[:period])
+        out = [s]
+        for x in series[period:]:
+            s = s - s / period + x
+            out.append(s)
+        return out
+
+    atr, sm_plus, sm_minus = _wilder(tr), _wilder(plus_dm), _wilder(minus_dm)
+
+    dx = []
+    for a, p, m in zip(atr, sm_plus, sm_minus):
+        if a == 0:
+            dx.append(0.0)
+            continue
+        pdi, mdi = 100.0 * p / a, 100.0 * m / a
+        denom = pdi + mdi
+        dx.append(0.0 if denom == 0 else 100.0 * abs(pdi - mdi) / denom)
+
+    if len(dx) < period:
+        return None, None
+    adx = sum(dx[:period]) / period
+    for x in dx[period:]:
+        adx = (adx * (period - 1) + x) / period
+
+    direction = None
+    if atr[-1]:
+        pdi, mdi = 100.0 * sm_plus[-1] / atr[-1], 100.0 * sm_minus[-1] / atr[-1]
+        direction = "up" if pdi > mdi else "down" if mdi > pdi else None
+    return round(float(adx), 2), direction
+
+
+def classify_adx(adx: float | None) -> str:
+    if adx is None:
+        return "n/a"
+    if adx >= ADX_TREND:
+        return "trend"
+    if adx < ADX_RANGE:
+        return "range"
+    return "mixed"
+
+
+# --------------------------------------------------------------------------- #
 # Headline sentiment
 # --------------------------------------------------------------------------- #
 def _words(text: str):
@@ -197,6 +270,8 @@ class TickerContext:
     rsi_state: str
     headlines: tuple[str, ...]
     news_score: int
+    adx: float | None = None                # Wilder 14 trend strength
+    adx_direction: str | None = None        # "up" | "down" | None (from +DI/-DI)
 
 
 @dataclass(frozen=True)
@@ -223,6 +298,14 @@ class MarketContext:
             if t.symbol == symbol:
                 return t
         return None
+
+    def adx_for(self, symbol: str) -> float | None:
+        t = self.ticker(symbol)
+        return t.adx if t else None
+
+    def adx_direction_for(self, symbol: str) -> str | None:
+        t = self.ticker(symbol)
+        return t.adx_direction if t else None
 
     def regime_flags(self) -> list[str]:
         flags = []
@@ -279,7 +362,12 @@ class MarketContext:
             heads = "; ".join(t.headlines) if t.headlines else "(unavailable)"
             rsi = "n/a" if t.rsi is None else f"{t.rsi:.1f}"
             parts.append(f"News {t.symbol}: {heads}")
-            parts.append(f"RSI {t.symbol}: {rsi} ({t.rsi_state})")
+            adx = "n/a" if t.adx is None else f"{t.adx:.1f}"
+            dirn = f", {t.adx_direction}" if t.adx_direction else ""
+            parts.append(
+                f"RSI {t.symbol}: {rsi} ({t.rsi_state}) | "
+                f"ADX {t.symbol}: {adx} ({classify_adx(t.adx)}{dirn})"
+            )
         return " | ".join(parts)
 
 

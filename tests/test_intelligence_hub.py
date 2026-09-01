@@ -26,11 +26,18 @@ _CAL = (
 )
 
 
+def _uptrend_ohlc(syms):
+    return {s: {"high": [100.0 + i for i in range(40)],
+               "low": [99.0 + i for i in range(40)],
+               "close": [99.5 + i for i in range(40)]} for s in syms}
+
+
 def _yf_ok(**over):
     base = dict(
         vix_fn=lambda: (16.0, 18.0, round(16.0 / 18.0, 3)),          # contango
         news_fn=lambda syms: {s: [f"{s} headline one", f"{s} rallies, earnings beat"] for s in syms},
         closes_fn=lambda syms: {s: [100 + i for i in range(20)] for s in syms},
+        ohlc_fn=_uptrend_ohlc,
     )
     base.update(over)
     return base
@@ -82,6 +89,31 @@ def test_ticker_rsi_and_news_come_through() -> None:
     assert spy.rsi == 100.0               # monotonic rally series
     assert spy.headlines and spy.news_score >= 1
     assert mc.ok is True
+
+
+# ======================================================================= #
+# ADX (yfinance OHLC -> Wilder ADX)
+# ======================================================================= #
+def test_adx_lands_on_the_ticker() -> None:
+    mc = ih.gather(None, ["SPY"], now=datetime(2026, 9, 1, tzinfo=UTC),
+                   calendar=_CAL, **_yf_ok())
+    spy = mc.ticker("SPY")
+    assert spy.adx is not None and spy.adx >= 25.0
+    assert spy.adx_direction == "up"
+    assert mc.adx_for("SPY") == spy.adx
+    assert "ADX SPY:" in mc.synthesis()
+
+
+def test_adx_none_when_ohlc_fetch_fails_but_context_still_ok() -> None:
+    def boom(_syms):
+        raise RuntimeError("yahoo ohlc down")
+
+    mc = ih.gather(None, ["SPY"], now=datetime(2026, 9, 1, tzinfo=UTC),
+                   calendar=_CAL, **_yf_ok(ohlc_fn=boom))
+    assert mc.ok is True                       # degrades, does not fall back
+    assert mc.ticker("SPY").adx is None
+    assert mc.adx_for("SPY") is None
+    assert any("adx" in e for e in mc.errors)
 
 
 # ======================================================================= #

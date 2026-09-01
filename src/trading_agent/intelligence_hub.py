@@ -12,6 +12,8 @@ Signals added on top of ``context_gatherer.MarketContext``:
   * ``panic_regime`` — term structure in **backwardation** (VIX > VXV): the
     market is pricing near-term stress; strategy.py flips short-vol → long-vol.
   * ``macro_danger`` — a High-Impact ("Red Folder") event inside the next 48h.
+  * per-ticker ``adx`` / ``adx_direction`` — Wilder 14 trend strength from
+    yfinance OHLC; strategy.py disables iron condors when ADX >= 25.
 
 ``context_gatherer`` keeps ownership of the pure maths (Wilder RSI, sentiment,
 the macro calendar, ``prioritize``); this module only swaps the data source and
@@ -31,6 +33,7 @@ PANIC_RATIO_THRESHOLD = 1.0      # VIX / VXV above this => backwardation => pani
 VIX_SYMBOL = "^VIX"
 VXV_SYMBOLS = ("^VIX3M", "^VXV")  # ^VXV was delisted; ^VIX3M is the live 3-month
 RSI_SESSIONS = 30
+ADX_SESSIONS = 60               # ADX needs ~2x its 14-period window to settle
 
 
 # --------------------------------------------------------------------------- #
@@ -102,6 +105,27 @@ def yf_closes(symbols, *, sessions: int = RSI_SESSIONS) -> dict[str, list[float]
     return out
 
 
+def yf_ohlc(symbols, *, sessions: int = ADX_SESSIONS) -> dict[str, dict]:
+    """{symbol: {"high": [...], "low": [...], "close": [...]}} (oldest first) for
+    the Wilder ADX. yfinance returns OHLC in one call; a per-symbol failure
+    degrades to an empty dict for that name (ADX -> None -> ER fallback)."""
+    import yfinance as yf
+
+    out: dict[str, dict] = {}
+    for s in symbols:
+        try:
+            hist = yf.Ticker(s).history(period=f"{sessions * 2}d")
+            out[s] = {
+                "high": [float(x) for x in hist["High"].dropna().tolist()][-sessions:],
+                "low": [float(x) for x in hist["Low"].dropna().tolist()][-sessions:],
+                "close": [float(x) for x in hist["Close"].dropna().tolist()][-sessions:],
+            }
+        except Exception as exc:  # noqa: BLE001
+            log.debug("yfinance OHLC for %s: %s", s, exc)
+            out[s] = {}
+    return out
+
+
 # --------------------------------------------------------------------------- #
 # Orchestrator
 # --------------------------------------------------------------------------- #
@@ -131,6 +155,7 @@ def gather(
     vix_fn=None,
     news_fn=None,
     closes_fn=None,
+    ohlc_fn=None,
     # Alpaca fallbacks (context_gatherer); injected in tests
     alpaca_vix_fn=None,
     alpaca_news_fn=None,
@@ -144,6 +169,7 @@ def gather(
     vix_fn = vix_fn or yf_vix_term_structure
     news_fn = news_fn or (lambda syms: yf_headlines(syms))
     closes_fn = closes_fn or (lambda syms: yf_closes(syms))
+    ohlc_fn = ohlc_fn or (lambda syms: yf_ohlc(syms))
     alpaca_vix_fn = alpaca_vix_fn or (lambda: cg.fetch_vix_proxy(creds))
     alpaca_news_fn = alpaca_news_fn or (lambda syms: cg.fetch_headlines(creds, syms))
     alpaca_closes_fn = alpaca_closes_fn or (lambda syms: cg.fetch_closes_map(creds, syms))
@@ -178,12 +204,18 @@ def gather(
     closes_map = _try(lambda: closes_fn(symbols), lambda: alpaca_closes_fn(symbols),
                       errors, "internals") or {}
 
+    # -- OHLC -> ADX (yf only; failure -> ADX None -> strategy falls back to ER) #
+    ohlc_map = _try(lambda: ohlc_fn(symbols), None, errors, "adx") or {}
+
     tickers = []
     for s in symbols:
         heads = tuple(head_map.get(s) or ())
         rsi = cg.wilder_rsi(closes_map.get(s) or [])
+        bars = ohlc_map.get(s) or {}
+        adx, adx_dir = cg.wilder_adx(bars.get("high"), bars.get("low"), bars.get("close"))
         tickers.append(cg.TickerContext(s, rsi, cg.classify_rsi(rsi), heads,
-                                        cg.score_headlines(heads)))
+                                        cg.score_headlines(heads),
+                                        adx=adx, adx_direction=adx_dir))
 
     got_something = (
         bool(events) or vix is not None or vix_proxy is not None

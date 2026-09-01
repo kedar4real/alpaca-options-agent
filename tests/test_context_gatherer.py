@@ -68,6 +68,51 @@ def test_rsi_mixed_series_is_between_0_and_100() -> None:
     assert r is not None and 55.0 < r < 65.0
 
 
+# ======================================================================= #
+# Wilder ADX
+# ======================================================================= #
+def test_adx_flags_a_strong_uptrend() -> None:
+    highs = [100.0 + i for i in range(40)]
+    lows = [99.0 + i for i in range(40)]
+    closes = [99.5 + i for i in range(40)]
+    adx, direction = cg.wilder_adx(highs, lows, closes)
+    assert adx is not None and adx >= cg.ADX_TREND
+    assert direction == "up"
+
+
+def test_adx_flags_a_strong_downtrend() -> None:
+    highs = [140.0 - i for i in range(40)]
+    lows = [139.0 - i for i in range(40)]
+    closes = [139.5 - i for i in range(40)]
+    adx, direction = cg.wilder_adx(highs, lows, closes)
+    assert adx is not None and adx >= cg.ADX_TREND
+    assert direction == "down"
+
+
+def test_adx_is_low_in_a_choppy_range() -> None:
+    highs, lows, closes = [], [], []
+    for i in range(60):
+        mid = 100.0 + (0.5 if i % 2 else -0.5)
+        highs.append(mid + 0.5)
+        lows.append(mid - 0.5)
+        closes.append(mid)
+    adx, _ = cg.wilder_adx(highs, lows, closes)
+    assert adx is not None and adx < cg.ADX_RANGE
+
+
+def test_adx_none_when_not_enough_history() -> None:
+    assert cg.wilder_adx([1, 2, 3], [1, 2, 3], [1, 2, 3]) == (None, None)
+    assert cg.wilder_adx([], [], []) == (None, None)
+
+
+def test_classify_adx_bands() -> None:
+    assert cg.classify_adx(30.0) == "trend"
+    assert cg.classify_adx(25.0) == "trend"
+    assert cg.classify_adx(19.9) == "range"
+    assert cg.classify_adx(22.0) == "mixed"
+    assert cg.classify_adx(None) == "n/a"
+
+
 def test_classify_rsi_bands() -> None:
     assert classify_rsi(72.0) == "overbought"
     assert classify_rsi(70.0) == "overbought"

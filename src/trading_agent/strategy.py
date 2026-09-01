@@ -68,6 +68,14 @@ MIN_IV_RV_SPREAD = 0.02
 LOW_IV_RV_SPREAD = -0.02          # IV at least this far BELOW RV counts as "IV << RV"
 EFFICIENCY_RATIO_WINDOW = 10      # trading days for the Kaufman efficiency ratio
 RANGE_BOUND_ER = 0.30            # ER < this -> range-bound ; ER >= this -> trending
+
+# ADX trend-strength filter (context-supplied; Wilder 14). ER can be noisy, so a
+# confirmed strong trend hard-disables the iron condor:
+#   ADX >= ADX_TREND_HIGH  -> strong trend: condor OFF, directional credit spread only
+#   ADX <  ADX_RANGE_LOW   -> dead market: condor welcome (ER logic unchanged)
+#   in between             -> indeterminate: fall back to the Kaufman ER call
+ADX_TREND_HIGH = 25.0
+ADX_RANGE_LOW = 20.0
 STRANGLE_DELTA_TARGET = 0.25      # long strangle legs: ~0.25 delta each side
 
 REGIME_IRON_CONDOR = "iron_condor"
@@ -217,6 +225,21 @@ class RegimeDecision:
 SHORT_VOL_STRUCTURES = frozenset({REGIME_IRON_CONDOR, REGIME_BULL_PUT, REGIME_BEAR_CALL})
 
 
+def _ctx_adx(context, snapshot) -> tuple[float | None, str | None]:
+    """(adx, direction) for this snapshot's symbol from the MarketContext, or
+    (None, None) when no context / no ADX is available (tolerant of the plain
+    SimpleNamespace contexts used in tests)."""
+    if context is None:
+        return None, None
+    sym = snapshot.get("symbol") or snapshot.get("underlying")
+    getter = getattr(context, "adx_for", None)
+    if not (getter and sym):
+        return None, None
+    adx = getter(sym)
+    dir_getter = getattr(context, "adx_direction_for", None)
+    return adx, (dir_getter(sym) if dir_getter else None)
+
+
 def select_regime(
     snapshot: dict,
     *,
@@ -242,6 +265,34 @@ def select_regime(
             f"{'/'.join(flags)} active — {base.reason}",
             base.efficiency_ratio,
             base.direction,
+        )
+
+    # ADX trend-strength filter: a confirmed strong trend is the #1 iron-condor
+    # killer (selling a range into a breakout). Disable the condor and demand a
+    # directional credit spread aligned with the trend; if the trend has no
+    # clear side, stand aside. ADX in the 20-25 band is left to the ER call.
+    adx, adx_dir = _ctx_adx(context, snapshot)
+    if adx is not None and adx >= ADX_TREND_HIGH and base.regime == REGIME_IRON_CONDOR:
+        direction = adx_dir or trend_direction(snapshot.get("daily_closes"))
+        if direction == "up":
+            return RegimeDecision(
+                REGIME_BULL_PUT,
+                f"ADX OVERRIDE: ADX {adx:.1f} >= {ADX_TREND_HIGH:.0f} (strong up-trend) -> Bull Put (condor disabled)",
+                f"strong trend (ADX {adx:.1f}); {base.reason}",
+                base.efficiency_ratio, "up",
+            )
+        if direction == "down":
+            return RegimeDecision(
+                REGIME_BEAR_CALL,
+                f"ADX OVERRIDE: ADX {adx:.1f} >= {ADX_TREND_HIGH:.0f} (strong down-trend) -> Bear Call (condor disabled)",
+                f"strong trend (ADX {adx:.1f}); {base.reason}",
+                base.efficiency_ratio, "down",
+            )
+        return RegimeDecision(
+            REGIME_NONE,
+            f"ADX OVERRIDE: ADX {adx:.1f} >= {ADX_TREND_HIGH:.0f} (strong trend, no clear direction) -> stand aside",
+            f"strong trend, condor disabled; {base.reason}",
+            base.efficiency_ratio,
         )
     return base
 

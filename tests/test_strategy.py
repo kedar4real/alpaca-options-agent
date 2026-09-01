@@ -482,3 +482,58 @@ def test_panic_does_not_manufacture_a_trade_when_there_is_no_regime() -> None:
     d = s.select_regime(_snap(atm_iv=0.14, spread=0.0, iv_eligible=False, closes=UP),
                         context=_ctx(panic=True, danger=True))
     assert d.regime == s.REGIME_NONE
+
+
+# =========================================================================== #
+# Quant enhancement 4 — ADX trend-strength filter disables condors in a trend
+# =========================================================================== #
+def _adx_ctx(*, adx, direction=None):
+    return SimpleNamespace(
+        regime_flags=lambda: [],
+        adx_for=lambda sym: adx,
+        adx_direction_for=lambda sym: direction,
+    )
+
+
+def test_strong_uptrend_adx_overrides_condor_to_bull_put() -> None:
+    d = s.select_regime(
+        _snap(atm_iv=0.22, spread=0.05, iv_eligible=True, closes=CHOP),   # base = iron_condor
+        context=_adx_ctx(adx=32.0, direction="up"),
+    )
+    assert d.regime == s.REGIME_BULL_PUT
+    assert "ADX OVERRIDE" in d.label and d.direction == "up"
+
+
+def test_strong_downtrend_adx_overrides_condor_to_bear_call() -> None:
+    d = s.select_regime(
+        _snap(atm_iv=0.22, spread=0.05, iv_eligible=True, closes=CHOP),
+        context=_adx_ctx(adx=40.0, direction="down"),
+    )
+    assert d.regime == s.REGIME_BEAR_CALL
+    assert "ADX OVERRIDE" in d.label
+
+
+def test_adx_grey_zone_leaves_the_condor_alone() -> None:
+    d = s.select_regime(
+        _snap(atm_iv=0.22, spread=0.05, iv_eligible=True, closes=CHOP),
+        context=_adx_ctx(adx=22.0, direction="up"),   # 20-25 -> fall back to ER
+    )
+    assert d.regime == s.REGIME_IRON_CONDOR
+
+
+def test_strong_adx_without_direction_stands_aside() -> None:
+    d = s.select_regime(
+        _snap(atm_iv=0.22, spread=0.05, iv_eligible=True, closes=CHOP),
+        context=_adx_ctx(adx=30.0, direction=None),   # CHOP has no trend_direction
+    )
+    assert d.regime == s.REGIME_NONE
+    assert "no clear direction" in d.label
+
+
+def test_adx_does_not_touch_a_non_condor_regime() -> None:
+    # Regime B (low IV / range-bound) -> long strangle; ADX filter only kills condors
+    d = s.select_regime(
+        _snap(atm_iv=0.10, spread=-0.06, iv_eligible=False, closes=CHOP),
+        context=_adx_ctx(adx=45.0, direction="up"),
+    )
+    assert d.regime == s.REGIME_LONG_STRANGLE

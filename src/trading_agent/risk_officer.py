@@ -67,11 +67,19 @@ def _ensure_env_loaded() -> None:
 
 
 # --- Featherless AI (primary) --------------------------------------------- #
-# Qwen2.5-7B-Instruct: a mid-size, non-gated instruct model on Featherless's
-# catalogue (32k context, available on the free tier). Override via env.
+# Qwen2.5-72B-Instruct: a large non-gated instruct model on Featherless's
+# catalogue. Follows the strict VERDICT/THESIS format, reasons correctly about
+# absolute VIX level and term structure (the 7B kept calling a sub-20 VIX
+# "elevated"), and is not a chain-of-thought model so no <think> handling is
+# needed. ~3s/call. Meta Llama 70B is gated (needs HF OAuth) so it is not an
+# option here. Override via env.
 DEFAULT_FEATHERLESS_BASE_URL = "https://api.featherless.ai/v1"
-DEFAULT_FEATHERLESS_MODEL = "Qwen/Qwen2.5-7B-Instruct"
+DEFAULT_FEATHERLESS_MODEL = "Qwen/Qwen2.5-72B-Instruct"
 FEATHERLESS_TIMEOUT = float(os.environ.get("FEATHERLESS_TIMEOUT", "45"))
+# The officer only ever emits a VERDICT line plus a 2-3 sentence THESIS. Cap the
+# completion so a chatty model can't run past the response into a truncated,
+# unparseable reply (which would fall back to Ollama for no reason).
+OFFICER_MAX_TOKENS = int(os.environ.get("FEATHERLESS_MAX_TOKENS", "1024"))
 
 # --- Ollama (fallback) --------------------------------------------------- #
 DEFAULT_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
@@ -210,6 +218,18 @@ is not already overbought/oversold against the direction of a proposed
 directional Credit Spread before approving it. Treat "No Context Available" as a
 reason for caution, not confidence.
 
+### QUANT CLARIFICATION (read this before you judge the VIX and RSI signals)
+    - VIX term structure in CONTANGO (front VIX < 3-month VXV, ratio < 1.0) is
+      the NORMAL, stable state of the market. Contango is NOT a reason to veto
+      and is NOT "market stress". Only BACKWARDATION (VIX > VXV, ratio > 1.0)
+      is a panic-regime signal that should veto short-volatility structures.
+    - A NEUTRAL 14-day RSI (roughly 40-60) is IDEAL for range-bound,
+      premium-selling structures like iron condors: it means price is not
+      trending hard in either direction. Treat neutral RSI as a positive or
+      neutral signal, never as a reason to veto. RSI only argues against a
+      trade when it is overbought/oversold AGAINST the direction of a
+      directional credit spread.
+
 Reason about (a) whether this structure fits the stated regime and the IV-RV
 spread, (b) whether the macro backdrop makes adding this exposure imprudent right
 now. Then answer EXACTLY in this format, nothing else:
@@ -268,6 +288,7 @@ def _call_featherless(client, model: str, prompt: str) -> str:
     resp = client.chat.completions.create(
         model=model,
         messages=[{"role": "user", "content": prompt}],
+        max_tokens=OFFICER_MAX_TOKENS,
     )
     choices = getattr(resp, "choices", None) or []
     if not choices:

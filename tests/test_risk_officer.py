@@ -188,6 +188,17 @@ def test_featherless_approve_is_used_ollama_not_called() -> None:
     assert "PROPOSED TRADE" in fl.calls[0]["messages"][0]["content"]
 
 
+def test_featherless_call_caps_max_tokens() -> None:
+    fl = FakeFeatherless(content=APPROVE)
+    sess = FakeSession(exc=AssertionError("ollama must not be called"))
+    ro.review_trade(
+        order(), snapshot(), account(),
+        featherless_client=fl, featherless_model="meta-llama/Llama-3.3-70B-Instruct",
+        session=sess,
+    )
+    assert fl.calls[0]["max_tokens"] == ro.OFFICER_MAX_TOKENS
+
+
 def test_featherless_veto_is_used() -> None:
     fl = FakeFeatherless(content=VETO)
     r = ro.review_trade(order(), snapshot(), account(), featherless_client=fl)
@@ -389,6 +400,26 @@ def test_prompt_macro_context_fails_safe_to_no_context_available() -> None:
     prompt = fl.calls[0]["messages"][0]["content"]
     assert "### MACRO CONTEXT" in prompt
     assert "No Context Available" in prompt
+
+
+def test_prompt_has_quant_clarification_on_contango_and_neutral_rsi() -> None:
+    prompt = ro.build_prompt(order(), snapshot(), account())
+    assert "### QUANT CLARIFICATION" in prompt
+    # contango = normal, not a veto trigger; only backwardation panics
+    assert "CONTANGO" in prompt and "BACKWARDATION" in prompt
+    assert "NOT a reason to veto" in prompt
+    # neutral RSI 40-60 is good for range-bound premium selling
+    assert "40-60" in prompt
+    assert "IDEAL for range-bound" in prompt
+
+
+def test_quant_clarification_reaches_the_judge_prompt() -> None:
+    prompt = ro.build_prompt(
+        order(), snapshot(), account(),
+        bull_case="VERDICT: APPROVE\nTHESIS: rich premium.",
+        bear_case="VERDICT: VETO\nTHESIS: contango is stress.",
+    )
+    assert "### QUANT CLARIFICATION" in prompt and "### DEBATE" in prompt
 
 
 # --------------------------------------------------------------------------- #

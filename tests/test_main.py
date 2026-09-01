@@ -38,6 +38,21 @@ from trading_agent.risk_manager import AccountState, OrderLeg
 
 CFG = Config()  # defaults: 0.50 profit target, 2.0x stop, 45s review timeout
 
+def test_load_env_early_makes_dotenv_agent_keys_visible(tmp_path, monkeypatch) -> None:
+    (tmp_path / ".env").write_text(
+        "AGENT_TICKERS=AAA,BBB,CCC\nAGENT_PROFIT_TARGET_FRACTION=0.4\n"
+    )
+    monkeypatch.chdir(tmp_path)
+    for k in ("AGENT_TICKERS", "AGENT_PROFIT_TARGET_FRACTION", "AGENT_ENV_FILE"):
+        monkeypatch.delenv(k, raising=False)
+
+    agent.load_env_early()
+    cfg = agent.Config.from_env()
+
+    assert cfg.tickers == ("AAA", "BBB", "CCC")
+    assert cfg.profit_target_fraction == 0.4
+
+
 CONDOR_LEGS = (
     OrderLeg("sell", "put", 3, "SPY260904P00760000"),
     OrderLeg("buy", "put", 3, "SPY260904P00755000"),

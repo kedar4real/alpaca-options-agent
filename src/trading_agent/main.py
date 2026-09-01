@@ -205,6 +205,23 @@ def load_env_file(path: str | None) -> None:
     log.info("loaded env file: %s", p)
 
 
+def load_env_early() -> None:
+    """Load ``.env`` BEFORE ``Config.from_env()`` reads ``os.environ`` — otherwise
+    ``AGENT_*`` keys placed in ``.env`` are silently ignored (only the lazily
+    loaded LLM keys would take effect). ``AGENT_ENV_FILE`` (an explicit path)
+    wins; otherwise default discovery walks up from the CWD. Never overrides a
+    value already exported into the real environment."""
+    from dotenv import find_dotenv, load_dotenv
+
+    explicit = os.environ.get("AGENT_ENV_FILE")
+    if explicit and Path(explicit).is_file():
+        load_dotenv(explicit, override=False)
+    else:
+        # usecwd=True: discover from the working directory (the agent runs from
+        # the repo root), not from this module's location.
+        load_dotenv(find_dotenv(usecwd=True), override=False)
+
+
 # --------------------------------------------------------------------------- #
 # Tracked positions + session state
 # --------------------------------------------------------------------------- #
@@ -1214,6 +1231,7 @@ def run_forever(config: Config | None = None) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    load_env_early()
     run_forever(Config.from_env())
     return 0
 

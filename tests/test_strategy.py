@@ -122,7 +122,7 @@ def test_plan_builds_full_condor_when_criteria_met() -> None:
 
 
 def test_plan_rejects_thin_credit() -> None:
-    # widen wings to 20 so credit/width falls well under 25%
+    # widen wings to 20 so credit/width falls well under the MIN_CREDIT_TO_WIDTH gate
     chain = [
         mk("put", 760, 0.225, 2.05, 2.15),
         mk("put", 740, 0.10, 0.40, 0.50),
@@ -133,7 +133,7 @@ def test_plan_rejects_thin_credit() -> None:
         chain, underlying_price=770.0, iv_regime=ELIGIBLE, today=TODAY
     )
     assert plan.eligible is False
-    assert "below 25% target" in plan.reason
+    assert f"below {s.MIN_CREDIT_TO_WIDTH:.0%} target" in plan.reason
     assert len(plan.legs) == 4  # legs still reported for inspection
 
 
@@ -367,12 +367,12 @@ def test_plan_bear_call_is_a_call_credit_spread() -> None:
 
 
 def test_credit_spread_still_respects_the_credit_to_width_gate() -> None:
-    # thin credit relative to a wide wing -> blocked, same 25% rule as the condor
+    # thin credit relative to a wide wing -> blocked, same MIN_CREDIT_TO_WIDTH rule as the condor
     plan = s.plan_bull_put(
         sample_chain(), underlying_price=770.0, iv_regime=BLOCKED, today=TODAY
     )
     assert plan.eligible is False
-    assert "below 25% target" in plan.reason
+    assert f"below {s.MIN_CREDIT_TO_WIDTH:.0%} target" in plan.reason
 
 
 # =========================================================================== #

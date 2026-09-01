@@ -49,7 +49,7 @@ def test_regime_hackathon_blocked_below_static_threshold() -> None:
 
 
 def test_regime_hackathon_boundary_is_strict() -> None:
-    # exactly the threshold is NOT eligible (must be > 15%)
+    # exactly the threshold is NOT eligible (must be strictly > STATIC_IV_THRESHOLD)
     assert d.evaluate_iv_regime(d.STATIC_IV_THRESHOLD, []).trade_eligible is False
 
 

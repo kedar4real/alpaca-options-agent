@@ -5,11 +5,11 @@ Pipeline
 --------
 1. Pull a market snapshot from ``data.py``.
 2. IV-regime gate: use the IV percentile once >= 10 days of history exist,
-   otherwise fall back to Hackathon Mode (static threshold, ATM IV > 15%).
+   otherwise fall back to Hackathon Mode (static threshold, ATM IV > 12%).
 3. Pick the nearest listed expiry 1-3 trading days out (via ``nth_trading_day``).
 4. Short legs at ~0.20-0.25 delta (target 0.225).
 5. Long legs at ~0.10 delta, else $5 further OTM than the matching short.
-6. Require net credit >= 25% of the wing width.
+6. Require net credit >= 20% of the wing width.
 7. Size the position so max loss <= 1.5% of equity ($1,500) — CLAUDE.md hard rule.
    The canonical fraction lives in ``risk_manager.MAX_RISK_PER_TRADE_PCT``;
    ``risk_manager.check_order()`` re-checks it against *live* equity before send.
@@ -47,7 +47,7 @@ LONG_DELTA_TARGET = 0.10
 LONG_DELTA_TOLERANCE = 0.05   # accept 0.05-0.15 for the long leg's delta
 LONG_OTM_OFFSET = 5.0         # $ wing width when no ~0.10-delta strike is available
 
-MIN_CREDIT_TO_WIDTH = 0.25    # target net credit >= 25% of the wing width
+MIN_CREDIT_TO_WIDTH = 0.20    # target net credit >= 20% of the wing width
 
 # IV must sit at least this far (annualized vol points) above 10-day realized vol,
 # i.e. options are pricing in more movement than the underlying has actually made.

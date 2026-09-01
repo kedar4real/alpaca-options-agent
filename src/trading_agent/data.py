@@ -43,7 +43,7 @@ TRADING_DAYS_PER_YEAR = 252    # annualization factor
 # moderately elevated.
 IV_HISTORY_MIN_DAYS = 10    # rows of history required before the percentile is trusted
 IV_PERCENTILE_MIN = 50.0    # once trusted: trade only at/above the median IV day
-STATIC_IV_THRESHOLD = 0.15  # "Hackathon Mode": until then, trade-eligible if ATM IV > 15%
+STATIC_IV_THRESHOLD = 0.12  # "Hackathon Mode": until then, trade-eligible if ATM IV > 12%
 
 # The strategy only trades near-the-money contracts a few days out, so keep the
 # chain pull tiny: strikes within +/- STRIKE_WINDOW_PCT of spot, expiring between

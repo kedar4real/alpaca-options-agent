@@ -265,17 +265,17 @@ def _lv_pos(debit_per_spread: float, qty: int, tid: str) -> rm.OpenPosition:
                            entry_credit=-debit_per_spread, structure="long_strangle")
 
 
-def test_long_vol_position_count_at_the_limit_blocks_a_third() -> None:
-    two = (_lv_pos(1.0, 1, "a"), _lv_pos(1.0, 1, "b"))
-    d = rm.check_order(_lv_order(0.50, 1), account(100_000, positions=two))
+def test_long_vol_position_count_at_the_limit_blocks_the_next_one() -> None:
+    at_cap = tuple(_lv_pos(1.0, 1, c) for c in "abc")   # 3 open == MAX_LONG_VOL_POSITIONS
+    d = rm.check_order(_lv_order(0.50, 1), account(100_000, positions=at_cap))
     assert d.checks["long_vol_concentration"] is False
     assert any("open long-vol positions" in b for b in d.blocks)
     assert d.approved is False
 
 
-def test_second_long_vol_position_is_allowed() -> None:
-    one = (_lv_pos(1.0, 1, "a"),)
-    d = rm.check_order(_lv_order(0.50, 1), account(100_000, positions=one))
+def test_third_long_vol_position_is_allowed() -> None:
+    two = (_lv_pos(1.0, 1, "a"), _lv_pos(1.0, 1, "b"))
+    d = rm.check_order(_lv_order(0.50, 1), account(100_000, positions=two))
     assert d.checks["long_vol_concentration"] is True
 
 

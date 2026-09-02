@@ -42,7 +42,7 @@ CONTRACT_MULTIPLIER = 100
 # may not exceed MAX_LONG_VOL_DEBIT_PCT of current equity, and no more than
 # MAX_LONG_VOL_POSITIONS may be open at once.
 MAX_LONG_VOL_DEBIT_PCT = 0.04
-MAX_LONG_VOL_POSITIONS = 2
+MAX_LONG_VOL_POSITIONS = 3
 
 # Macro guard: on a High-Impact macro day (FOMC / CPI / NFP) the caller sets
 # AccountState.risk_multiplier to this, so gate 1's *effective* cap is halved for

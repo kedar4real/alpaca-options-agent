@@ -535,6 +535,9 @@ class _FakeConn:
     def cancel_order(self, order_id):
         pass
 
+    def get_positions(self):
+        return []
+
 
 def _fake_executed_summary(symbol):
     plan = SimpleNamespace(
@@ -1163,6 +1166,86 @@ def test_run_cycle_records_an_executed_trade_as_pending_not_open(tmp_path, monke
     assert [p.order_id for p in session.pending_orders] == ["SPY-ord"]
     assert [e["id"] for e in report.submitted] == ["SPY-ord"]
     assert report.opened == []
+
+
+# ======================================================================= #
+# Commit C — broker reconciliation of the open book (fixes 7 + 9)
+# ======================================================================= #
+from trading_agent.main import reconcile_open_book  # noqa: E402
+
+
+def _bpos(symbol, qty=1):
+    return SimpleNamespace(symbol=symbol, qty=str(qty))
+
+
+def test_reconcile_open_book_drops_a_condor_the_broker_does_not_hold() -> None:
+    sess = Session(starting_equity=100_000.0, open_condors=[tracked("ghost")])
+    out = reconcile_open_book(sess, [_bpos("SPY")], now_iso="t")   # unrelated equity leg
+    assert sess.open_condors == []
+    assert [e["id"] for e in out["dropped"]] == ["ghost"]
+    assert any(e["kind"] == "position_dropped" and e["id"] == "ghost"
+               for e in sess.history)
+
+
+def test_reconcile_open_book_keeps_a_condor_with_at_least_one_live_leg() -> None:
+    sess = Session(starting_equity=100_000.0, open_condors=[tracked("live")])
+    out = reconcile_open_book(sess, [_bpos(CONDOR_LEGS[0].symbol)], now_iso="t")
+    assert [c.id for c in sess.open_condors] == ["live"]
+    assert out["dropped"] == []
+
+
+def test_reconcile_open_book_adopts_an_orphan_broker_leg() -> None:
+    sess = Session(starting_equity=100_000.0)
+    out = reconcile_open_book(sess, [_bpos("GLD260903C00405000", qty=13)], now_iso="t")
+    assert len(sess.open_condors) == 1
+    o = sess.open_condors[0]
+    assert o.structure == "orphan_leg" and o.symbol == "GLD"
+    assert o.expiry == date(2026, 9, 3) and o.quantity == 13
+    assert [lg.symbol for lg in o.legs] == ["GLD260903C00405000"]
+    assert len(out["adopted"]) == 1
+    assert any(e["kind"] == "orphan_adopted" for e in sess.history)
+
+
+def test_reconcile_open_book_does_not_adopt_a_leg_something_already_tracks() -> None:
+    sess = Session(starting_equity=100_000.0,
+                   open_condors=[tracked("live")],
+                   pending_orders=[_pending("p1")])          # legs SPY_P / SPY_C
+    held = [_bpos(CONDOR_LEGS[0].symbol), _bpos("SPY_P"), _bpos("SPY_C")]
+    out = reconcile_open_book(sess, held, now_iso="t")
+    assert out["adopted"] == []
+    assert [c.id for c in sess.open_condors] == ["live"]
+
+
+def test_reconcile_open_book_ignores_an_unparseable_symbol() -> None:
+    sess = Session(starting_equity=100_000.0)
+    out = reconcile_open_book(sess, [_bpos("NOT_AN_OCC")], now_iso="t")
+    assert sess.open_condors == [] and out["adopted"] == []
+
+
+def test_decide_exit_treats_an_orphan_leg_as_expiry_only() -> None:
+    orphan = TrackedCondor(id="o", expiry=date(2099, 1, 1), quantity=1,
+                           entry_credit=0.0, structure="orphan_leg",
+                           legs=(OrderLeg("buy", "call", 1, "GLD260903C00405000"),))
+    assert decide_exit(CondorValuation(orphan, 5.0), is_expiring=False) is None
+    assert decide_exit(CondorValuation(orphan, -5.0), is_expiring=False) is None
+    assert decide_exit(CondorValuation(orphan, 5.0), is_expiring=True) == "expiry"
+
+
+def test_run_cycle_reconciles_the_open_book_against_broker_positions(tmp_path, monkeypatch) -> None:
+    cfg = Config(session_file=str(tmp_path / "s.json"), tickers=("SPY",))
+    session = Session(starting_equity=100_000.0, open_condors=[tracked("ghost")])
+    _stub_context(monkeypatch, priority=())
+    monkeypatch.setattr(agent, "get_market_snapshot",
+                        lambda symbol, creds=None: {"symbol": symbol})
+    monkeypatch.setattr(agent, "evaluate_cycle_decision",
+                        lambda *a, **k: DecisionSummary(True, "strategy", "skipped", "x"))
+
+    class _C(_FakeConn):
+        def get_positions(self):
+            return [SimpleNamespace(symbol="SPY", qty="1")]   # unrelated, not one of ghost's legs
+
+    agent.run_cycle(_C(), session, cfg, now_et=None)
+    assert session.open_condors == []          # ghost dropped — broker holds none of its legs
 
 
 def test_maybe_post_mortem_after_close_once_per_day(tmp_path) -> None:

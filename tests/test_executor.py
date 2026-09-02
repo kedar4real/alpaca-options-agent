@@ -309,6 +309,30 @@ def test_build_mleg_request_still_rejects_three_leg_orders() -> None:
         ex._build_mleg_request(ProposedOrder(4.0, 1.2, 1, CONDOR[:3]))
 
 
+def test_all_structures_submit_as_exactly_one_atomic_mleg_order() -> None:
+    """Condor, strangle and vertical each reach the broker as a SINGLE MLEG
+    order — never legged into separate submissions (which is how one leg fills
+    while the other doesn't)."""
+    condor = order()
+    strangle = ProposedOrder(
+        0.0, -2.10, 3,
+        (OrderLeg("buy", "put", 3, PUT_LONG), OrderLeg("buy", "call", 3, CALL_LONG)),
+        max_loss=210.0,
+    )
+    vertical = ProposedOrder(
+        5.0, 1.5, 3,
+        (OrderLeg("sell", "put", 3, PUT_SHORT), OrderLeg("buy", "put", 3, PUT_LONG)),
+    )
+    for po in (condor, strangle, vertical):
+        fake = FakeTradingClient()
+        res = ex.submit_iron_condor(po, account(), client=fake)
+        assert res.submitted is True
+        assert len(fake.submitted) == 1                    # ONE call, not one-per-leg
+        req = fake.submitted[0]
+        assert req.order_class == OrderClass.MLEG
+        assert len(req.legs) == len(po.legs)
+
+
 def test_strangle_round_trips_through_submit() -> None:
     fake = FakeTradingClient()
     po = ex.from_plan(_strangle_plan(size=2))

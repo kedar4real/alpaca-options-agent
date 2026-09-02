@@ -551,7 +551,13 @@ def decide_exit(
     of the credit captured; stop at a loss of ``stop_loss_multiple`` x the credit.
     Debit structures (long strangle): profit at +``profit_target_fraction`` of the
     premium; stop at -``debit_stop_fraction`` of the premium (you can never lose
-    more than the premium, so the credit "2x" stop does not apply)."""
+    more than the premium, so the credit "2x" stop does not apply).
+
+    An ``orphan_leg`` (a single broker leg adopted by ``reconcile_open_book`` —
+    e.g. one side of a strangle that filled alone) has no meaningful entry price,
+    so it is closed on expiry only, never on P&L math."""
+    if valuation.condor.structure == "orphan_leg":
+        return "expiry" if is_expiring else None
     if valuation.condor.structure in DEBIT_STRUCTURES:
         if valuation.gain_fraction >= profit_target_fraction:
             return "profit-target"
@@ -1124,6 +1130,14 @@ def run_cycle(conn: AlpacaConnection, session: Session, config: Config, *,
     promoted = pending_result["promoted"]
     account = _account()
 
+    # 0c. Rebuild the open book from broker truth — drop phantom positions, adopt
+    #     orphan legs (one side of a strangle that filled alone). Guarded on a
+    #     non-empty position list so an API blip can never nuke the book.
+    broker_positions = conn.get_positions()
+    if broker_positions:
+        reconcile_open_book(session, broker_positions, now_iso)
+        account = _account()
+
     # 1. MANAGE OPEN POSITIONS FIRST — across the whole basket
     expiring = flag_expiring_positions(account.open_positions, today=today)
     expiring_ids = {ep.position.symbol for ep in expiring}
@@ -1319,6 +1333,77 @@ def reconcile_pending_orders(
     session.pending_orders = keep
     return {"promoted": promoted, "abandoned": abandoned,
             "stale_cancelled": stale_cancelled}
+
+
+def reconcile_open_book(session: Session, broker_positions, now_iso: str) -> dict:
+    """Rebuild the tracked open book from broker truth — the belt-and-suspenders
+    guarantee that phantom positions cannot persist:
+
+    * drop any tracked position whose legs are **all** absent from the broker;
+    * a position with *some* legs still live is kept but logged as a PARTIAL
+      (management / the expiry gate resolve it);
+    * adopt any broker option leg that neither a tracked position nor a pending
+      order owns as a 1-leg ``orphan_leg`` — the expiry gate then closes it.
+
+    Mutates ``session``. Returns ``{"dropped": [...], "adopted": [...]}``. The
+    caller should only invoke this with a **non-empty** ``broker_positions`` (an
+    empty list may just be an API blip — never nuke the book on that)."""
+    from .alpaca_trader import parse_occ_symbol
+
+    held: set[str] = {
+        str(getattr(p, "symbol", "") or "") for p in (broker_positions or ())
+    }
+    held.discard("")
+
+    dropped: list[dict] = []
+    kept: list[TrackedCondor] = []
+    for c in session.open_condors:
+        leg_syms = {lg.symbol for lg in c.legs if lg.symbol}
+        if leg_syms and leg_syms.isdisjoint(held):
+            ev = {"kind": "position_dropped", "at": now_iso, "id": c.id,
+                  "symbol": c.symbol, "structure": c.structure,
+                  "reason": "broker holds none of its legs"}
+            session.history.append(ev)
+            dropped.append(ev)
+            log.warning("RECONCILE — dropped %s %s [%s]: broker holds none of its "
+                        "legs (phantom)", c.symbol, c.id, c.structure)
+        else:
+            if leg_syms and not leg_syms.issubset(held):
+                log.warning("RECONCILE — %s %s is a PARTIAL: %d/%d legs live at "
+                            "the broker", c.symbol, c.id,
+                            len(leg_syms & held), len(leg_syms))
+            kept.append(c)
+    session.open_condors = kept
+
+    owned = {lg.symbol for c in session.open_condors for lg in c.legs if lg.symbol}
+    owned |= {lg.symbol for p in session.pending_orders for lg in p.legs if lg.symbol}
+
+    adopted: list[dict] = []
+    by_symbol = {str(getattr(p, "symbol", "")): p for p in (broker_positions or ())}
+    for sym in sorted(held - owned):
+        try:
+            root, expiry, right, _strike = parse_occ_symbol(sym)
+        except ValueError:
+            continue                       # not an option leg this agent can manage
+        raw_qty = getattr(by_symbol.get(sym), "qty", 1)
+        try:
+            qty = max(1, int(abs(float(raw_qty))))
+        except (TypeError, ValueError):
+            qty = 1
+        orphan = TrackedCondor(
+            id=f"orphan:{sym}", symbol=root, structure="orphan_leg", expiry=expiry,
+            quantity=qty, entry_credit=0.0,
+            legs=(OrderLeg("buy", right, qty, sym),), opened_at=now_iso,
+        )
+        session.open_condors.append(orphan)
+        ev = {"kind": "orphan_adopted", "at": now_iso, "id": orphan.id,
+              "symbol": root, "structure": "orphan_leg", "detail": sym}
+        session.history.append(ev)
+        adopted.append(ev)
+        log.warning("RECONCILE — adopted orphan broker leg %s (%dx) as %s; the "
+                    "expiry gate will close it", sym, qty, orphan.id)
+
+    return {"dropped": dropped, "adopted": adopted}
 
 
 def _record_pending(session: Session, decision: DecisionSummary, now_iso: str) -> dict:

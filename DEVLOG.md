@@ -1,5 +1,19 @@
 # Dev Log
 
+## 2026-09-03 — trailing take-profit + a 3rd long-vol slot
+
+- `MAX_LONG_VOL_POSITIONS` 2 -> 3 (operator call, last session before NFP). The
+  4% total-debit cap and the correlation guard are unchanged, so the extra slot
+  only fills if an uncorrelated name shows an edge while the book is still under
+  4% of equity in premium.
+- **Trailing take-profit** (`decide_exit`): once a position shows +25% favourable
+  P&L (`AGENT_TRAIL_ARM_FRACTION`) the agent tracks its peak; a 10-point giveback
+  (`AGENT_TRAIL_GIVEBACK_FRACTION`) while still positive exits
+  `trailing-take-profit`. Locks a catalyst spike that peaked above the fixed
+  +35% target but faded below it between 5-minute cycles.
+  `TrackedCondor.peak_gain_fraction` persists across restarts. Debit and credit
+  structures; the fixed target and hard stop still take precedence.
+
 ## 2026-09-02 (evening) — Steps 4-7 + the phantom-order overhaul
 
 The morning's jam (session.json tracking four positions the broker did not hold,

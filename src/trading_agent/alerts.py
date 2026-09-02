@@ -67,7 +67,14 @@ def _default_poster(url: str, content: str) -> bool:
 
     body = json.dumps({"content": content}).encode("utf-8")
     req = urllib.request.Request(
-        url, data=body, headers={"Content-Type": "application/json"}, method="POST"
+        url,
+        data=body,
+        # Discord rejects the stock "Python-urllib/x.y" User-Agent with a 403.
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": "trading-agent/1.0 (+https://github.com/alpaca-hackathon)",
+        },
+        method="POST",
     )
     with urllib.request.urlopen(req, timeout=POST_TIMEOUT_S) as resp:
         return 200 <= resp.status < 300

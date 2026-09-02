@@ -84,3 +84,29 @@ def test_halt_and_hard_stop_and_error_messages() -> None:
 def test_messages_stay_within_discord_length_limit() -> None:
     msg = alerts.format_message("cycle_error", error="x" * 5000)
     assert len(msg) <= alerts.MAX_CONTENT
+
+
+def test_default_poster_sends_an_explicit_user_agent(monkeypatch) -> None:
+    """Discord 403s POSTs carrying the stock ``Python-urllib`` User-Agent."""
+    captured = {}
+
+    class _Resp:
+        status = 204
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_urlopen(req, timeout=None):
+        captured["ua"] = req.get_header("User-agent")
+        captured["ct"] = req.get_header("Content-type")
+        return _Resp()
+
+    import urllib.request
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    assert alerts._default_poster("https://discord.test/hook", "hi") is True
+    assert captured["ua"] and "urllib" not in captured["ua"].lower()
+    assert captured["ct"] == "application/json"

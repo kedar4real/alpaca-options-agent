@@ -67,6 +67,7 @@ from . import context_gatherer
 from . import intelligence_hub
 from . import offhours
 from . import risk_officer
+from .alpaca_trader import fetch_recent_news, intraday_realized_vol
 from .data import IV_HISTORY_PATH, STATIC_IV_THRESHOLD, get_market_snapshot
 from .risk_manager import (
     DAILY_LOSS_HALT_PCT,
@@ -739,6 +740,8 @@ def evaluate_new_trade(
     check_fn=None,
     review_fn=None,
     submit_fn=None,
+    news_fn=None,
+    intraday_vol_fn=None,
     call_log: list[str] | None = None,
 ) -> DecisionSummary:
     """Run strategy -> risk_manager -> risk_officer -> executor **in that order**.
@@ -794,13 +797,31 @@ def evaluate_new_trade(
 
     # ---- 3. risk_officer ----------------------------------------------- #
     # Hand the regime choice + macro context to the reviewer alongside the snapshot.
+    # Step 5 — intraday context, fetched ONLY for orders that got this far (they
+    # cost API calls). Both are fail-safe and neither is gated anywhere.
+    _sym = snapshot.get("symbol") or snapshot.get("underlying") or ""
+
+    def _safe(fn, default):
+        if fn is None:
+            return default
+        try:
+            return fn(_sym)
+        except Exception as exc:  # noqa: BLE001 - context must never block a trade
+            log.warning("intraday context for %s failed: %s", _sym, exc)
+            return default
+
     review_snapshot = {
         **snapshot,
         "structure": getattr(plan, "structure", None),
         "regime": getattr(plan, "regime", None),
         "regime_reason": getattr(plan, "regime_reason", None),
         "market_context": market_context,
+        "recent_headlines": _safe(news_fn, []),
+        "intraday_rv": _safe(intraday_vol_fn, None),
     }
+    log.info("[%s] intraday context — %d headline(s), intraday RV %s",
+             _sym, len(review_snapshot["recent_headlines"]),
+             review_snapshot["intraday_rv"])
     mark("risk_officer")
     review = review_fn(order, review_snapshot, account, timeout=config.review_timeout_s)
     _debate_txt = getattr(review, "transcript", lambda: "")() or ""
@@ -1355,8 +1376,15 @@ def run_cycle(conn: AlpacaConnection, session: Session, config: Config, *,
     def _debate_fn(o, s, a, timeout=None):
         return risk_officer.debate_review(o, s, a, timeout=timeout, lessons=lessons)
 
+    # Step 5 — live intraday context for whatever reaches the officer.
+    def _news_fn(sym):
+        return fetch_recent_news(conn.creds, sym, limit=5)
+
+    def _intraday_fn(sym):
+        return intraday_realized_vol(conn.creds, sym)
+
     for i, symbol in enumerate(ordered):
-        kw = {}
+        kw = {"news_fn": _news_fn, "intraday_vol_fn": _intraday_fn}
         if i == 0 and config.debate_enabled:
             kw["review_fn"] = _debate_fn
         decision = evaluate_cycle_decision(

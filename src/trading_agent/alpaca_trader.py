@@ -50,7 +50,7 @@ from alpaca.data.requests import (
     StockLatestQuoteRequest,
     StockLatestTradeRequest,
 )
-from alpaca.data.timeframe import TimeFrame
+from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 
 log = logging.getLogger("alpaca_trader")
 
@@ -308,6 +308,101 @@ def get_daily_closes(
         log.warning("could not fetch %s daily bars: %s", symbol, exc)
         return []
     return [float(bar.close) for bar in series][-sessions:]
+
+
+# --------------------------------------------------------------------------- #
+# Step 5 — intraday inputs (news + realized vol). Context for the risk officer;
+# neither is a gate.
+# --------------------------------------------------------------------------- #
+# 78 five-minute bars in a 6.5-hour RTH session, 252 sessions a year.
+BARS_PER_YEAR_5MIN = 78 * 252
+INTRADAY_MIN_BARS = 12
+
+
+def annualize_intraday_vol(
+    closes,
+    *,
+    min_bars: int = INTRADAY_MIN_BARS,
+    bars_per_year: int = BARS_PER_YEAR_5MIN,
+) -> float | None:
+    """Annualized stdev of log returns over ``closes`` (intraday bars).
+
+    ``None`` when fewer than ``min_bars`` bars are available — an hour of tape is
+    not a volatility estimate. A perfectly flat series is ``0.0``, not ``None``.
+    """
+    if not closes or len(closes) < min_bars:
+        return None
+    rets = [
+        math.log(closes[i] / closes[i - 1])
+        for i in range(1, len(closes))
+        if closes[i - 1] > 0 and closes[i] > 0
+    ]
+    if len(rets) < 2:
+        return None
+    mean = sum(rets) / len(rets)
+    var = sum((r - mean) ** 2 for r in rets) / (len(rets) - 1)
+    return round(math.sqrt(var) * math.sqrt(bars_per_year), 4)
+
+
+def fetch_recent_news(
+    creds: AlpacaCredentials,
+    symbol: str,
+    *,
+    limit: int = 5,
+    client=None,
+) -> list[str]:
+    """Up to ``limit`` recent Alpaca news headlines for ``symbol``, newest first.
+
+    Fail-safe by design: any API/parse problem returns ``[]`` so a news outage can
+    never block or skew the trade path.
+    """
+    try:
+        from alpaca.data.historical.news import NewsClient
+        from alpaca.data.requests import NewsRequest
+
+        client = client or NewsClient(creds.api_key, creds.secret_key)
+        resp = client.get_news(NewsRequest(symbols=symbol, limit=limit))
+        data = getattr(resp, "data", None)
+        items = data.get("news", []) if isinstance(data, dict) else (resp or [])
+        out: list[str] = []
+        for item in items:
+            headline = (getattr(item, "headline", None) or "").strip()
+            if headline:
+                out.append(headline)
+            if len(out) >= limit:
+                break
+        return out
+    except Exception as exc:  # noqa: BLE001 - never let news break a cycle
+        log.warning("could not fetch %s news: %s", symbol, exc)
+        return []
+
+
+def intraday_realized_vol(
+    creds: AlpacaCredentials,
+    symbol: str,
+    *,
+    min_bars: int = INTRADAY_MIN_BARS,
+    client=None,
+    today: date | None = None,
+) -> float | None:
+    """Annualized realized vol from *today's* 5-minute bars for ``symbol``.
+
+    ``None`` on any failure or when the session is too young (< ``min_bars``
+    bars). Context only — deliberately not gated anywhere.
+    """
+    try:
+        client = client or StockHistoricalDataClient(creds.api_key, creds.secret_key)
+        request = StockBarsRequest(
+            symbol_or_symbols=symbol,
+            timeframe=TimeFrame(5, TimeFrameUnit.Minute),
+            start=(today or date.today()).isoformat(),
+        )
+        bars = client.get_stock_bars(request)
+        closes = [float(bar.close) for bar in bars[symbol]]
+    except Exception as exc:  # noqa: BLE001 - best-effort intraday pull
+        log.warning("could not fetch %s intraday bars: %s", symbol, exc)
+        return None
+    return annualize_intraday_vol(closes, min_bars=min_bars)
 
 
 def fetch_option_chain(

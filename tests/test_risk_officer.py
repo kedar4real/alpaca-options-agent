@@ -651,3 +651,38 @@ def test_warm_up_logs_outcome(caplog) -> None:
     with caplog.at_level(logging.WARNING, logger="risk_officer"):
         ro.warm_up(session=FakeSession(exc=requests.Timeout("timed out")))
     assert "warm-up FAILED" in caplog.text
+
+
+# =========================================================================== #
+# Step 5 — recent headlines + intraday realized vol reach the judge
+# =========================================================================== #
+def test_prompt_lists_recent_headlines_and_asks_for_veto_worthy_ones() -> None:
+    prompt = ro.build_prompt(
+        order(),
+        snapshot(symbol="GLD", recent_headlines=[
+            "Gold rips to a record as the dollar slides",
+            "Miner halts output after regulatory action",
+        ]),
+        account(),
+    )
+    assert "RECENT HEADLINES" in prompt
+    assert "Gold rips to a record as the dollar slides" in prompt
+    assert "Miner halts output after regulatory action" in prompt
+    assert "veto" in prompt.lower()
+
+
+def test_prompt_handles_no_headlines_without_pretending_there_are_some() -> None:
+    prompt = ro.build_prompt(order(), snapshot(recent_headlines=[]), account())
+    assert "RECENT HEADLINES" in prompt
+    assert "none retrieved" in prompt.lower()
+
+
+def test_prompt_reports_intraday_realized_vol_as_ungated_context() -> None:
+    prompt = ro.build_prompt(order(), snapshot(intraday_rv=0.1834), account())
+    assert "0.1834" in prompt
+    assert "not a gate" in prompt.lower()
+
+
+def test_prompt_intraday_rv_absent_is_labelled_unavailable() -> None:
+    prompt = ro.build_prompt(order(), snapshot(intraday_rv=None), account())
+    assert "intraday" in prompt.lower() and "n/a" in prompt.lower()

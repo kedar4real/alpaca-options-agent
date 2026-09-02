@@ -42,6 +42,8 @@ from .risk_manager import AccountState, ProposedOrder
 
 log = logging.getLogger("risk_officer")
 
+NL = chr(10)   # newline, kept out of nested f-string bodies
+
 # --------------------------------------------------------------------------- #
 # Config
 # --------------------------------------------------------------------------- #
@@ -161,6 +163,15 @@ def build_prompt(
 
     macro_context = (snapshot.get("market_context") or "").strip() or "No Context Available"
 
+    # Step 5 — intraday context (never gated; the officer weighs it qualitatively)
+    headlines = [h for h in (snapshot.get("recent_headlines") or []) if str(h).strip()]
+    headline_block = (
+        NL.join(f"    - {str(h).strip()}" for h in headlines)
+        if headlines else "    (none retrieved)"
+    )
+    _irv = snapshot.get("intraday_rv")
+    intraday_str = f"{_irv:.4f}" if isinstance(_irv, (int, float)) else "n/a"
+
     extra = ""
     if bull_case is not None or bear_case is not None:
         extra += (
@@ -217,6 +228,20 @@ trades (iron condor / credit spread). Use the ticker's 14-day RSI to confirm it
 is not already overbought/oversold against the direction of a proposed
 directional Credit Spread before approving it. Treat "No Context Available" as a
 reason for caution, not confidence.
+
+### INTRADAY (today, 5-minute bars)
+    intraday RV     {intraday_str}   (annualized; context only, NOT a gate)
+
+Compare intraday RV with the 10-day realized vol above. Much hotter intraday
+than 10-day means today is already moving more than the recent baseline.
+
+### RECENT HEADLINES ({ticker})
+{headline_block}
+
+If a headline describes something that materially changes this trade's risk —
+earnings or guidance, M&A, regulatory or legal action, a trading halt, index
+add/delete, a credit event — say so explicitly in your thesis and VETO. Routine
+market commentary, price-move recaps and analyst chatter are NOT veto-worthy.
 
 ### QUANT CLARIFICATION (read this before you judge the VIX and RSI signals)
     - VIX term structure in CONTANGO (front VIX < 3-month VXV, ratio < 1.0) is

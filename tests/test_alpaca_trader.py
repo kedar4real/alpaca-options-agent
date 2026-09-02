@@ -155,3 +155,84 @@ def test_filter_delta_band_is_inclusive_and_order_agnostic() -> None:
     contracts = [_contract("call", 0.20), _contract("call", 0.30)]
     out = at.filter_delta_band(contracts, "call", 0.30, 0.20)
     assert [c.abs_delta for c in out] == [0.20, 0.30]
+
+
+# =========================================================================== #
+# Step 5 — intraday inputs: recent news + intraday realized vol
+# =========================================================================== #
+CREDS = at.AlpacaCredentials(api_key="k", secret_key="s", paper=True)
+
+
+def test_annualize_intraday_vol_needs_a_minimum_bar_count() -> None:
+    assert at.annualize_intraday_vol([100.0] * 11, min_bars=12) is None
+    assert at.annualize_intraday_vol(None) is None
+    assert at.annualize_intraday_vol([]) is None
+
+
+def test_annualize_intraday_vol_is_zero_for_a_flat_tape() -> None:
+    assert at.annualize_intraday_vol([100.0] * 20) == 0.0
+
+
+def test_annualize_intraday_vol_grows_with_movement() -> None:
+    calm = [100.0 + (i % 2) * 0.01 for i in range(40)]
+    wild = [100.0 + (i % 2) * 1.00 for i in range(40)]
+    assert at.annualize_intraday_vol(calm) < at.annualize_intraday_vol(wild)
+    assert at.annualize_intraday_vol(wild) > 0.0
+
+
+class _FakeNewsClient:
+    def __init__(self, headlines, raises=None):
+        self._h = headlines
+        self._raises = raises
+        self.seen = None
+
+    def get_news(self, request):
+        if self._raises:
+            raise self._raises
+        self.seen = request
+        items = [SimpleNamespace(headline=h) for h in self._h]
+        return SimpleNamespace(data={"news": items})
+
+
+def test_fetch_recent_news_returns_trimmed_headlines() -> None:
+    client = _FakeNewsClient(["  Gold rips higher  ", "Fed speaks", ""])
+    out = at.fetch_recent_news(CREDS, "GLD", limit=5, client=client)
+    assert out == ["Gold rips higher", "Fed speaks"]      # blanks dropped, trimmed
+
+
+def test_fetch_recent_news_respects_the_limit() -> None:
+    client = _FakeNewsClient([f"h{i}" for i in range(10)])
+    assert len(at.fetch_recent_news(CREDS, "SPY", limit=3, client=client)) == 3
+
+
+def test_fetch_recent_news_is_fail_safe() -> None:
+    client = _FakeNewsClient([], raises=RuntimeError("news api 500"))
+    assert at.fetch_recent_news(CREDS, "SPY", client=client) == []
+
+
+class _FakeBarsClient:
+    def __init__(self, closes, raises=None):
+        self._closes = closes
+        self._raises = raises
+
+    def get_stock_bars(self, request):
+        if self._raises:
+            raise self._raises
+        bars = [SimpleNamespace(close=c) for c in self._closes]
+        return {request.symbol_or_symbols: bars}
+
+
+def test_intraday_realized_vol_from_five_minute_bars() -> None:
+    client = _FakeBarsClient([100.0 + (i % 2) * 0.5 for i in range(30)])
+    rv = at.intraday_realized_vol(CREDS, "SPY", client=client)
+    assert rv is not None and rv > 0.0
+
+
+def test_intraday_realized_vol_none_when_too_few_bars() -> None:
+    client = _FakeBarsClient([100.0] * 5)
+    assert at.intraday_realized_vol(CREDS, "SPY", client=client) is None
+
+
+def test_intraday_realized_vol_is_fail_safe() -> None:
+    client = _FakeBarsClient([], raises=RuntimeError("bars 500"))
+    assert at.intraday_realized_vol(CREDS, "SPY", client=client) is None

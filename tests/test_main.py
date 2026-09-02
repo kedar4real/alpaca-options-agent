@@ -1473,3 +1473,67 @@ def test_maybe_post_mortem_after_close_once_per_day(tmp_path) -> None:
     # later the same day — no repeat
     assert agent._maybe_post_mortem(
         sess, conn, cfg, now_et=datetime(2026, 9, 1, 16, 30, tzinfo=agent.ET)) is None
+
+
+# ======================================================================= #
+# Step 5 — intraday inputs reach the risk officer (and only the officer)
+# ======================================================================= #
+def test_evaluate_new_trade_enriches_the_officer_snapshot_with_news_and_intraday_rv() -> None:
+    spies = PipelineSpies()
+    seen: dict = {}
+
+    def review_fn(order, snap, acct, timeout=None):
+        seen.update(snap)
+        return SimpleNamespace(approved=True, provider="fake", thesis="ok",
+                               transcript=lambda: "")
+
+    summary = evaluate_new_trade(
+        {"symbol": "GLD"}, account(), config=CFG,
+        plan_fn=spies.plan_fn, to_order_fn=spies.to_order_fn, check_fn=spies.check_fn,
+        review_fn=review_fn, submit_fn=spies.submit_fn,
+        news_fn=lambda sym: [f"{sym} headline one", f"{sym} headline two"],
+        intraday_vol_fn=lambda sym: 0.2211,
+    )
+    assert summary.outcome == "executed"
+    assert seen["recent_headlines"] == ["GLD headline one", "GLD headline two"]
+    assert seen["intraday_rv"] == 0.2211
+
+
+def test_evaluate_new_trade_intraday_fetchers_are_fail_safe() -> None:
+    spies = PipelineSpies()
+    seen: dict = {}
+
+    def review_fn(order, snap, acct, timeout=None):
+        seen.update(snap)
+        return SimpleNamespace(approved=True, provider="fake", thesis="ok",
+                               transcript=lambda: "")
+
+    def boom(_sym):
+        raise RuntimeError("news api down")
+
+    summary = evaluate_new_trade(
+        {"symbol": "SPY"}, account(), config=CFG,
+        plan_fn=spies.plan_fn, to_order_fn=spies.to_order_fn, check_fn=spies.check_fn,
+        review_fn=review_fn, submit_fn=spies.submit_fn,
+        news_fn=boom, intraday_vol_fn=boom,
+    )
+    assert summary.outcome == "executed"          # the trade path is unaffected
+    assert seen["recent_headlines"] == [] and seen["intraday_rv"] is None
+
+
+def test_intraday_fetchers_are_not_called_before_the_risk_manager_passes() -> None:
+    """They cost API calls — only orders that actually reach the officer pay."""
+    spies = PipelineSpies()
+    calls: list[str] = []
+
+    def blocking_check(order, acct):
+        return SimpleNamespace(approved=False, blocks=["nope"])
+
+    evaluate_new_trade(
+        {"symbol": "SPY"}, account(), config=CFG,
+        plan_fn=spies.plan_fn, to_order_fn=spies.to_order_fn,
+        check_fn=blocking_check, review_fn=spies.review_fn, submit_fn=spies.submit_fn,
+        news_fn=lambda s: calls.append("news") or [],
+        intraday_vol_fn=lambda s: calls.append("rv") or None,
+    )
+    assert calls == []

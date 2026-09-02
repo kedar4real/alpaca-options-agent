@@ -642,6 +642,13 @@ class _FakeConn:
     def get_positions(self):
         return []
 
+    def account_snapshot(self):
+        a = _FakeAcct()
+        return {"equity": a.equity, "last_equity": a.last_equity}
+
+    def news(self, symbol, limit=5):
+        return []
+
 
 def _fake_executed_summary(symbol):
     plan = SimpleNamespace(
@@ -1537,3 +1544,54 @@ def test_intraday_fetchers_are_not_called_before_the_risk_manager_passes() -> No
         intraday_vol_fn=lambda s: calls.append("rv") or None,
     )
     assert calls == []
+
+
+# ======================================================================= #
+# Step 6 — MCP runtime path is optional and never fatal
+# ======================================================================= #
+class _MCPConn(_FakeConn):
+    def __init__(self):
+        self.creds = SimpleNamespace(api_key="k", secret_key="s", paper=True)
+        self.mcp = None
+
+
+def test_attach_mcp_is_skipped_when_disabled(caplog) -> None:
+    conn = _MCPConn()
+    with caplog.at_level("INFO", logger="agent"):
+        agent.attach_mcp(conn, Config(mcp_enabled=False))
+    assert conn.mcp is None
+    assert "alpaca-py" in caplog.text
+
+
+def test_attach_mcp_falls_back_when_the_server_will_not_start(monkeypatch, caplog) -> None:
+    monkeypatch.setattr(agent.mcp_client, "connect_session", lambda **kw: None)
+    conn = _MCPConn()
+    with caplog.at_level("INFO", logger="agent"):
+        agent.attach_mcp(conn, Config(mcp_enabled=True))
+    assert conn.mcp is not None and conn.mcp.enabled is False
+    assert "unavailable" in caplog.text.lower()
+
+
+def test_attach_mcp_uses_a_live_session_when_one_connects(monkeypatch) -> None:
+    class _S:
+        connected = True
+
+        def list_tools(self):
+            return ["get_account_info", "get_news"]
+
+    monkeypatch.setattr(agent.mcp_client, "connect_session", lambda **kw: _S())
+    conn = _MCPConn()
+    agent.attach_mcp(conn, Config(mcp_enabled=True))
+    assert conn.mcp.enabled is True
+
+
+def test_account_snapshot_prefers_mcp_then_degrades(monkeypatch) -> None:
+    conn = agent.AlpacaConnection.__new__(agent.AlpacaConnection)
+    conn.mcp = SimpleNamespace(account_info=lambda: {"equity": "99450.80",
+                                                    "last_equity": "100000"})
+    assert conn.account_snapshot() == {"equity": 99450.80, "last_equity": 100_000.0}
+
+    # an MCP payload without a usable equity must degrade to the alpaca-py read
+    conn.mcp = SimpleNamespace(account_info=lambda: {"nope": 1})
+    conn.get_account = lambda: SimpleNamespace(equity=1234.0, last_equity=1200.0)
+    assert conn.account_snapshot() == {"equity": 1234.0, "last_equity": 1200.0}

@@ -64,6 +64,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from . import alerts
+from . import mcp_client
 from . import context_gatherer
 from . import intelligence_hub
 from . import offhours
@@ -158,6 +159,8 @@ class Config:
     self_correction: bool = True                # post_trade_analysis -> lessons_learned.json
     hard_stop_et: str = "2026-09-04 10:30"      # competition hard stop (ET wall clock)
     halt_file: str = "HALT"                     # if this file exists: manage only, no new trades
+    mcp_enabled: bool = True                    # try the Alpaca MCP server for reads
+    mcp_server_dir: str = "C:/alpaca-hackathon/alpaca-mcp-server"
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -187,6 +190,10 @@ class Config:
             not in ("0", "false", "no", "off"),
             hard_stop_et=os.environ.get("AGENT_HARD_STOP_ET", "2026-09-04 10:30"),
             halt_file=os.environ.get("AGENT_HALT_FILE", "HALT"),
+            mcp_enabled=os.environ.get("AGENT_MCP", "true").strip().lower()
+            not in ("0", "false", "no", "off"),
+            mcp_server_dir=os.environ.get(
+                "AGENT_MCP_SERVER_DIR", "C:/alpaca-hackathon/alpaca-mcp-server"),
         )
 
 
@@ -966,6 +973,36 @@ class AlpacaConnection:
         self.trading = TradingClient(
             self.creds.api_key, self.creds.secret_key, paper=self.creds.paper
         )
+        # Optional MCP read path; attached by startup(). None => pure alpaca-py.
+        self.mcp = None
+
+    def account_snapshot(self) -> dict:
+        """Per-cycle account read. Served by the MCP server when a session is
+        up, otherwise by alpaca-py. Always returns usable floats — an MCP payload
+        without a parseable equity degrades to the alpaca-py read."""
+        if self.mcp is not None:
+            snap = self.mcp.account_info()
+            try:
+                equity = float(snap["equity"])
+            except (KeyError, TypeError, ValueError):
+                snap = None
+            if snap:
+                last = snap.get("last_equity")
+                try:
+                    last = float(last)
+                except (TypeError, ValueError):
+                    last = equity
+                return {"equity": equity, "last_equity": last}
+        acct = self.get_account()
+        equity = float(acct.equity)
+        return {"equity": equity,
+                "last_equity": float(getattr(acct, "last_equity", None) or equity)}
+
+    def news(self, symbol: str, limit: int = 5) -> list[str]:
+        """Per-symbol headlines: MCP when available, else alpaca-py."""
+        if self.mcp is not None:
+            return self.mcp.news(symbol, limit)
+        return fetch_recent_news(self.creds, symbol, limit=limit)
 
     def get_clock(self):
         return self.trading.get_clock()
@@ -1241,9 +1278,9 @@ def run_cycle(conn: AlpacaConnection, session: Session, config: Config, *,
     if hard_stop_reached(now_et, config.hard_stop_et):
         return _hard_stop_cycle(conn, session, config, now_et)
 
-    acct = conn.get_account()
-    current_equity = float(acct.equity)
-    day_start_equity = float(getattr(acct, "last_equity", None) or current_equity)
+    acct_snap = conn.account_snapshot()
+    current_equity = float(acct_snap["equity"])
+    day_start_equity = float(acct_snap.get("last_equity") or current_equity)
 
     # 0. CONTEXTUAL INTELLIGENCE — one pull per cycle, before anything else.
     market_context = _gather_market_context(conn, config, now_et)
@@ -1384,7 +1421,7 @@ def run_cycle(conn: AlpacaConnection, session: Session, config: Config, *,
 
     # Step 5 — live intraday context for whatever reaches the officer.
     def _news_fn(sym):
-        return fetch_recent_news(conn.creds, sym, limit=5)
+        return conn.news(sym, limit=5)
 
     def _intraday_fn(sym):
         return intraday_realized_vol(conn.creds, sym)
@@ -1772,11 +1809,41 @@ def _maybe_daily_summary(session: Session, conn: AlpacaConnection, clock, config
         log.error("daily summary failed: %s", exc)
 
 
+def attach_mcp(conn: "AlpacaConnection", config: Config) -> None:
+    """Try the Alpaca MCP server for the per-cycle account + news reads.
+
+    Optional by design: if it is disabled, the SDK is missing, or the server will
+    not start, ``conn.mcp`` stays ``None`` and every read is served by alpaca-py.
+    The chosen path is logged at startup and again per call.
+    """
+    if not config.mcp_enabled:
+        log.info("MCP disabled (AGENT_MCP=off) — all reads served by alpaca-py")
+        return
+    session = mcp_client.connect_session(
+        command="uv",
+        args=["run", "--directory", config.mcp_server_dir, "alpaca-mcp-server"],
+        cwd=config.mcp_server_dir,
+    )
+    conn.mcp = mcp_client.MCPBridge(
+        session=session,
+        account_fallback=lambda: {
+            "equity": float(conn.get_account().equity),
+            "last_equity": float(
+                getattr(conn.get_account(), "last_equity", None)
+                or conn.get_account().equity
+            ),
+        },
+        news_fallback=lambda sym, limit: fetch_recent_news(conn.creds, sym, limit=limit),
+    )
+    log.info("Alpaca read path — %s", conn.mcp.describe())
+
+
 def startup(config: Config) -> tuple[AlpacaConnection, Session]:
     setup_logging(config.log_level, config.log_file, config.activity_log_file)
     load_env_file(config.env_file)
 
     conn = AlpacaConnection()
+    attach_mcp(conn, config)
     acct = conn.get_account()
     account_id = str(getattr(acct, "account_number", None) or getattr(acct, "id", ""))
     live_equity = float(acct.equity)

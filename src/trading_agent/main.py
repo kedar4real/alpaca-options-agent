@@ -1819,10 +1819,19 @@ def attach_mcp(conn: "AlpacaConnection", config: Config) -> None:
     if not config.mcp_enabled:
         log.info("MCP disabled (AGENT_MCP=off) — all reads served by alpaca-py")
         return
+    # The server reads credentials from its OWN environment, so hand it the same
+    # ones the agent uses (merged over os.environ so uv/PATH still resolve).
+    server_env = {
+        **os.environ,
+        "ALPACA_API_KEY": conn.creds.api_key,
+        "ALPACA_SECRET_KEY": conn.creds.secret_key,
+        "ALPACA_PAPER_TRADE": "true" if conn.creds.paper else "false",
+    }
     session = mcp_client.connect_session(
         command="uv",
         args=["run", "--directory", config.mcp_server_dir, "alpaca-mcp-server"],
         cwd=config.mcp_server_dir,
+        env=server_env,
     )
     conn.mcp = mcp_client.MCPBridge(
         session=session,

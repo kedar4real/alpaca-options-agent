@@ -1595,3 +1595,21 @@ def test_account_snapshot_prefers_mcp_then_degrades(monkeypatch) -> None:
     conn.mcp = SimpleNamespace(account_info=lambda: {"nope": 1})
     conn.get_account = lambda: SimpleNamespace(equity=1234.0, last_equity=1200.0)
     assert conn.account_snapshot() == {"equity": 1234.0, "last_equity": 1200.0}
+
+
+def test_attach_mcp_hands_the_server_its_own_alpaca_credentials(monkeypatch) -> None:
+    seen: dict = {}
+
+    def fake_connect(**kw):
+        seen.update(kw)
+        return None
+
+    monkeypatch.setattr(agent.mcp_client, "connect_session", fake_connect)
+    conn = _MCPConn()
+    agent.attach_mcp(conn, Config(mcp_enabled=True, mcp_server_dir="/srv"))
+
+    assert seen["args"] == ["run", "--directory", "/srv", "alpaca-mcp-server"]
+    assert seen["env"]["ALPACA_API_KEY"] == "k"
+    assert seen["env"]["ALPACA_SECRET_KEY"] == "s"
+    assert seen["env"]["ALPACA_PAPER_TRADE"] == "true"
+    assert "PATH" in seen["env"] or len(seen["env"]) > 3      # merged over os.environ

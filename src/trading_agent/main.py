@@ -149,6 +149,8 @@ class Config:
     profit_target_fraction: float = 0.35        # competition window: take credit at 35%
     stop_loss_multiple: float = 2.0
     debit_stop_fraction: float = 0.50           # close a debit trade down this much of the premium
+    trail_arm_fraction: float = 0.25            # start trailing once favourable P&L reaches this
+    trail_giveback_fraction: float = 0.10       # exit if P&L falls this far below its peak
     tickers: tuple[str, ...] = DEFAULT_TICKERS  # scan universe evaluated each cycle
     scan_time_box_s: int = 150                  # per-cycle budget for gathering snapshots
     # off-hours intelligence (observability only — never touches the trade path)
@@ -180,6 +182,8 @@ class Config:
             profit_target_fraction=_env_float("AGENT_PROFIT_TARGET_FRACTION", 0.35),
             stop_loss_multiple=_env_float("AGENT_STOP_LOSS_MULTIPLE", 2.0),
             debit_stop_fraction=_env_float("AGENT_DEBIT_STOP_FRACTION", 0.50),
+            trail_arm_fraction=_env_float("AGENT_TRAIL_ARM_FRACTION", 0.25),
+            trail_giveback_fraction=_env_float("AGENT_TRAIL_GIVEBACK_FRACTION", 0.10),
             tickers=tickers,
             activity_log_file=os.environ.get("AGENT_ACTIVITY_LOG", "logs/agent_activity.log"),
             heartbeat_minutes=_env_int("AGENT_HEARTBEAT_MINUTES", 60),
@@ -280,6 +284,7 @@ class TrackedCondor:
     opened_at: str = ""
     symbol: str = "SPY"                       # basket ticker
     structure: str = "iron_condor"           # iron_condor | long_strangle | bull_put | bear_call
+    peak_gain_fraction: float = 0.0          # high-water mark of favourable P&L fraction (for the trail)
 
     def as_open_position(self) -> OpenPosition:
         # OpenPosition.symbol carries our tracking id so flag_expiring_positions
@@ -298,6 +303,7 @@ class TrackedCondor:
             "quantity": self.quantity,
             "entry_credit": self.entry_credit,
             "opened_at": self.opened_at,
+            "peak_gain_fraction": self.peak_gain_fraction,
             "legs": [
                 {"action": lg.action, "right": lg.right,
                  "quantity": lg.quantity, "symbol": lg.symbol}
@@ -315,6 +321,7 @@ class TrackedCondor:
             quantity=int(d["quantity"]),
             entry_credit=float(d["entry_credit"]),
             opened_at=d.get("opened_at", ""),
+            peak_gain_fraction=float(d.get("peak_gain_fraction", 0.0)),
             legs=tuple(
                 OrderLeg(lg["action"], lg["right"], int(lg["quantity"]), lg.get("symbol"))
                 for lg in d.get("legs", [])
@@ -585,6 +592,8 @@ def decide_exit(
     stop_loss_multiple: float = 2.0,
     debit_stop_fraction: float = 0.50,
     catalyst_hold: bool = False,
+    trail_arm_fraction: float = 0.25,
+    trail_giveback_fraction: float = 0.10,
 ) -> str | None:
     """Should this position be closed now? Checked in the spec's order:
     profit target, then stop loss, then expiry. First match wins.
@@ -605,14 +614,31 @@ def decide_exit(
     so it is closed on expiry only, never on P&L math."""
     if valuation.condor.structure == "orphan_leg":
         return "expiry" if is_expiring else None
+
+    peak = valuation.condor.peak_gain_fraction
+
+    def _trailed(current: float) -> bool:
+        # armed once the position has shown `trail_arm_fraction` of favourable
+        # P&L; fires when it gives back `trail_giveback_fraction` from that peak
+        # while still in profit — locks a spike that faded below the fixed target
+        # between cycles.
+        return (peak >= trail_arm_fraction and current > 0.0
+                and (peak - current) >= trail_giveback_fraction)
+
     if valuation.condor.structure in DEBIT_STRUCTURES:
-        if valuation.gain_fraction >= profit_target_fraction:
+        gain = valuation.gain_fraction
+        if gain >= profit_target_fraction:
             return "profit-target"
-        if not catalyst_hold and valuation.gain_fraction <= -debit_stop_fraction:
+        if _trailed(gain):
+            return "trailing-take-profit"
+        if not catalyst_hold and gain <= -debit_stop_fraction:
             return "stop-loss"
     else:
-        if valuation.captured_fraction >= profit_target_fraction:
+        captured = valuation.captured_fraction
+        if captured >= profit_target_fraction:
             return "profit-target"
+        if _trailed(captured):
+            return "trailing-take-profit"
         if valuation.pnl_per_spread <= -stop_loss_multiple * valuation.condor.entry_credit:
             return "stop-loss"
     if is_expiring:
@@ -651,6 +677,11 @@ def manage_open_positions(
     logged rather than closed on a stop-worthy mark."""
     closed: list[dict] = []
     for val in valuations:
+        metric = (val.gain_fraction if val.condor.structure in DEBIT_STRUCTURES
+                  else val.captured_fraction)
+        if metric > val.condor.peak_gain_fraction:
+            val.condor.peak_gain_fraction = round(metric, 4)
+
         hold = (
             catalyst_date is not None
             and val.condor.structure in DEBIT_STRUCTURES
@@ -663,6 +694,8 @@ def manage_open_positions(
             stop_loss_multiple=config.stop_loss_multiple,
             debit_stop_fraction=config.debit_stop_fraction,
             catalyst_hold=hold,
+            trail_arm_fraction=config.trail_arm_fraction,
+            trail_giveback_fraction=config.trail_giveback_fraction,
         )
         if reason is None:
             if hold and val.gain_fraction <= -config.debit_stop_fraction:

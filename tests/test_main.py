@@ -1613,3 +1613,84 @@ def test_attach_mcp_hands_the_server_its_own_alpaca_credentials(monkeypatch) -> 
     assert seen["env"]["ALPACA_SECRET_KEY"] == "s"
     assert seen["env"]["ALPACA_PAPER_TRADE"] == "true"
     assert "PATH" in seen["env"] or len(seen["env"]) > 3      # merged over os.environ
+
+
+# ======================================================================= #
+# Trailing take-profit — lock a catalyst spike that pulled back below the
+# fixed target between cycles
+# ======================================================================= #
+def _peak_val(cost_to_close, *, debit=2.00, qty=8, peak=0.0, structure="long_strangle"):
+    c = TrackedCondor(id="tp", symbol="IWM", expiry=date(2026, 9, 4), quantity=qty,
+                      entry_credit=-debit, legs=CONDOR_LEGS[:2], structure=structure,
+                      peak_gain_fraction=peak)
+    return CondorValuation(c, cost_to_close)
+
+
+def test_trailing_take_profit_fires_on_a_giveback_from_an_armed_peak() -> None:
+    # peaked at +40% at some earlier sample; now +22% -> 18pt giveback >= 10 -> take it
+    v = _peak_val(-2.44, peak=0.40)                      # worth 2.44 vs 2.00 -> +22%
+    assert decide_exit(v, is_expiring=False, catalyst_hold=True) == "trailing-take-profit"
+
+
+def test_trailing_take_profit_does_not_arm_below_the_threshold() -> None:
+    v = _peak_val(-2.04, peak=0.20)                      # peak +20% < 25% arm; now +2%
+    assert decide_exit(v, is_expiring=False, catalyst_hold=True) is None
+
+
+def test_trailing_take_profit_holds_inside_the_giveback_band() -> None:
+    v = _peak_val(-2.52, peak=0.30)                      # peak +30%; now +26% -> 4pt giveback
+    assert decide_exit(v, is_expiring=False, catalyst_hold=True) is None
+
+
+def test_trailing_take_profit_never_closes_at_a_loss() -> None:
+    v = _peak_val(-1.90, peak=0.30)                      # now -5%: not a "take-profit"
+    assert decide_exit(v, is_expiring=False, catalyst_hold=True) is None
+    # and without the catalyst hold the -5% is still not deep enough for the stop
+    assert decide_exit(v, is_expiring=False, catalyst_hold=False) is None
+
+
+def test_fixed_profit_target_still_wins_over_the_trail() -> None:
+    v = _peak_val(-2.80, peak=0.42)                      # +40% now -> fixed +35% target
+    assert decide_exit(v, is_expiring=False, catalyst_hold=True) == "profit-target"
+
+
+def test_trailing_take_profit_also_covers_credit_structures() -> None:
+    c = TrackedCondor(id="tp", expiry=date(2099, 1, 1), quantity=3, entry_credit=1.00,
+                      legs=CONDOR_LEGS, structure="iron_condor", peak_gain_fraction=0.40)
+    # captured 20% now (bought back at 0.80) after peaking at 40% -> trail fires
+    assert decide_exit(CondorValuation(c, 0.80), is_expiring=False) == "trailing-take-profit"
+
+
+def test_manage_open_positions_tracks_the_peak_and_then_takes_the_giveback() -> None:
+    strangle = TrackedCondor(id="run", symbol="IWM", expiry=date(2026, 9, 4),
+                             quantity=8, entry_credit=-2.00, legs=CONDOR_LEGS[:2],
+                             structure="long_strangle")
+    sess = _session_with(strangle)
+    closed_calls: list[str] = []
+
+    # cycle 1: worth 2.90 -> +45% peak, but the fixed +35% target would fire here;
+    # use +32% so it only records the peak
+    manage_open_positions(sess, [CondorValuation(strangle, -2.64)], expiring_ids=set(),
+                          close_fn=lambda c: closed_calls.append(c.id), config=CFG,
+                          now_iso="2026-09-03T09:35:00-04:00", catalyst_date=date(2026, 9, 4))
+    assert closed_calls == []
+    assert sess.open_condors[0].peak_gain_fraction == pytest.approx(0.32)
+
+    # cycle 2: faded to +18% -> 14pt giveback from the 32% peak -> trailing exit
+    manage_open_positions(sess, [CondorValuation(sess.open_condors[0], -2.36)],
+                          expiring_ids=set(),
+                          close_fn=lambda c: closed_calls.append(c.id), config=CFG,
+                          now_iso="2026-09-03T09:40:00-04:00", catalyst_date=date(2026, 9, 4))
+    assert closed_calls == ["run"]
+    assert sess.history[-1]["reason"] == "trailing-take-profit"
+
+
+def test_session_round_trips_peak_gain_fraction(tmp_path) -> None:
+    sess = Session(starting_equity=100_000.0,
+                   open_condors=[TrackedCondor(id="x", expiry=date(2099, 1, 1), quantity=1,
+                                               entry_credit=-1.0, legs=CONDOR_LEGS[:2],
+                                               structure="long_strangle",
+                                               peak_gain_fraction=0.37)])
+    p = str(tmp_path / "s.json")
+    agent.save_session(sess, p)
+    assert agent.load_session(p).open_condors[0].peak_gain_fraction == pytest.approx(0.37)

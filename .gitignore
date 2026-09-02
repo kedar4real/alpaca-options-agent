@@ -29,3 +29,5 @@ session.json.bak*
 session.json.*-retired-*
 HALT
 HALT.*
+journal.md
+journal.csv

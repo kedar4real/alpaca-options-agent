@@ -63,6 +63,7 @@ from datetime import date, datetime, time as dtime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from . import alerts
 from . import context_gatherer
 from . import intelligence_hub
 from . import offhours
@@ -533,6 +534,7 @@ def update_sticky_halt(session: Session, account: AccountState) -> bool:
             "STICKY HALT LATCHED — total drawdown $%s breached the 5%% floor; "
             "no new trades for the rest of the competition", f"{total_dd:,.0f}",
         )
+        alerts.notify("halt", reason=f"total drawdown ${total_dd:,.0f} breached the 5% floor")
         return True
     return False
 
@@ -685,6 +687,9 @@ def manage_open_positions(
             val.condor.symbol, val.condor.id, val.condor.structure, reason,
             f"{val.total_pnl:,.2f}", val.condor.quantity,
         )
+        alerts.notify("trade_closed", symbol=val.condor.symbol,
+                      structure=val.condor.structure, reason=reason,
+                      pnl=val.total_pnl)
     return closed
 
 
@@ -1208,6 +1213,7 @@ def _hard_stop_cycle(conn: AlpacaConnection, session: Session, config: Config,
             f"{equity:,.2f}", f"{pnl:+,.2f}", f"{session.starting_equity:,.2f}",
             "=" * 60,
         )
+        alerts.notify("hard_stop", legs_closed=closed, remaining=remaining, equity=equity)
         if remaining:
             log.error("HARD STOP: %d position leg(s) did NOT close — retrying next cycle", remaining)
         else:
@@ -1499,6 +1505,8 @@ def reconcile_pending_orders(
             promoted.append(ev)
             log.info("FILLED %s %s [%s] — promoted from pending to open position",
                      tc.symbol, tc.id, tc.structure)
+            alerts.notify("trade_opened", symbol=tc.symbol, structure=tc.structure,
+                          detail=ev["detail"])
         elif status in _DEAD_STATUSES:
             ev = {"kind": "order_abandoned", "at": now_iso, "id": p.order_id,
                   "symbol": p.symbol, "structure": p.structure, "reason": status}
@@ -1617,9 +1625,31 @@ def _record_pending(session: Session, decision: DecisionSummary, now_iso: str) -
         quantity=qty, entry_credit=float(plan.net_credit), legs=legs,
         submitted_at=now_iso,
     ))
+    rd = decision.decision            # risk_manager.RiskDecision
+    rv = decision.review              # risk_officer review
     event = {"kind": "submitted", "at": now_iso, "id": order_id, "symbol": symbol,
              "structure": structure, "regime": getattr(plan, "regime", None),
-             "detail": decision.order_detail}
+             "detail": decision.order_detail,
+             "quantity": qty,
+             "entry_credit": float(plan.net_credit),
+             "expiry": plan.expiry.isoformat() if plan.expiry else None,
+             "legs": [lg.symbol for lg in legs],
+             # gate values at entry (journal)
+             "gates": {
+                 "iv_regime_mode": getattr(plan, "iv_regime_mode", None),
+                 "underlying_price": getattr(plan, "underlying_price", None),
+                 "iv_rv_spread": getattr(plan, "iv_rv_spread", None),
+                 "credit_to_width": getattr(plan, "credit_to_width", None),
+                 "max_loss_per_contract": getattr(plan, "max_loss_per_contract", None),
+                 "order_risk": getattr(rd, "order_risk", None),
+                 "max_risk_allowed": getattr(rd, "max_risk_allowed", None),
+             },
+             # officer verdict (journal)
+             "officer": {
+                 "provider": getattr(rv, "provider", None),
+                 "approved": getattr(rv, "approved", None),
+                 "thesis": getattr(rv, "thesis", None),
+             }}
     session.history.append(event)
     log.info("SUBMITTED %s %s [%s] — pending fill — %s",
              symbol, order_id, structure, decision.order_detail)
@@ -1806,6 +1836,7 @@ def run_forever(config: Config | None = None) -> None:
             return
         except Exception as exc:  # noqa: BLE001 - one bad cycle must not crash the loop
             log.exception("cycle failed (continuing next cycle): %s", exc)
+            alerts.notify("cycle_error", error=str(exc))
 
         time.sleep(config.loop_interval_s)
 

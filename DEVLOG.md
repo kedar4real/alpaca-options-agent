@@ -1,5 +1,34 @@
 # Dev Log
 
+## 2026-09-02 (evening) — Steps 4-7 + the phantom-order overhaul
+
+The morning's jam (session.json tracking four positions the broker did not hold,
+three stuck unfilled orders, the agent stuck at 4/4 doing nothing) was a single
+root cause: a position was recorded OPEN on order *submission*, not on fill.
+Fixing that pulled in five more defects, then the remaining handoff steps.
+
+| commit | change |
+|--------|--------|
+| `06264ec` | `PendingOrder` + `reconcile_pending_orders` — a trade is open only when the broker confirms `filled`; unfilled orders are cancelled after 2 cycles and free their slot; pending orders count toward the position cap |
+| `478dc53` | long-vol expiry floored at the macro catalyst — no more Thursday strangles bought for a Friday print |
+| `72dc762` | `reconcile_open_book` — every cycle the open book is rebuilt from broker truth; phantoms dropped, orphan legs adopted and closed by the expiry gate; all structures asserted to submit as one atomic MLEG |
+| `376f69c` | per-symbol dedup — a ticker with a position *or* a working order is excluded before ranking (a fill was freeing a slot and the ranker re-picked the same name, opening a second IWM strangle) |
+| `bd78cfb` | gate 4c, long-vol concentration: `MAX_LONG_VOL_DEBIT_PCT = 0.04`, `MAX_LONG_VOL_POSITIONS = 2` |
+| `d3851b5` | catalyst hold — a long-vol position that outlives the catalyst has its -50% stop suspended; profit target and hard stop still apply |
+| `7a69764` | Step 4: `AGENT_UNIVERSE` (12 ETFs), per-cycle scan table with gate pass/fail, 150s scan time-box |
+| `9f4a9cf` | Step 5: Alpaca news + 5-minute intraday realized vol into the officer prompt; fetched only for orders that clear risk_manager; neither is gated |
+| `43149ad` | Step 7: `alerts.py` (Discord webhook, five events, silent when unset or failing) and `journal.py` (`journal.md` + `journal.csv` with gate values and officer verdict per trade) |
+| `67089ab` | Step 6: optional Alpaca MCP read path (`get_account_info`, `get_news`) with an alpaca-py fallback; the trade path never touches MCP |
+
+433 tests green. Live on PA3FCNG4S7EO: MCP connected (72 tools), 12-name scan
+running clean, book held at 2 long-vol strangles (IWM 16x, SPY 8x, both 09-04)
+at 3.7% of equity against the 4% cap.
+
+A note on the concentration cap: with MACRO_DANGER active through Friday every
+structure the regime switch picks is a long strangle, so the cap is what stops
+the book becoming N correlated bets on one NFP print. It is doing exactly that —
+DIA/GLD/SLV/TLT/XLF/XLE/XLK/EEM all block at gate 4c each cycle.
+
 ## 2026-09-02 — Competition-window configuration (two sessions remaining)
 
 Recalibrated for the final competition window. **The defined-risk invariant, the

@@ -1,6 +1,11 @@
-# Project State
+# Architecture reference
 
-_Last updated: 2026-09-01_
+Module-by-module detail: function signatures, data shapes and the exact
+responsibilities of each layer. The README covers the current system at a
+higher level; `DEVLOG.md` carries dated entries for everything that changed
+after this document was last revised (2026-09-01), including the pending-order
+and broker-reconciliation rework, the long-vol concentration gate, the scan
+universe, and the MCP read path.
 
 ## Architecture
 

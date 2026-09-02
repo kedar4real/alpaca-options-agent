@@ -8,8 +8,11 @@ Autonomous Options Trading Agent for the Alpaca x LabLab.ai Hackathon.
 
 ## Hard Safety Rules (DO NOT BREAK)
 1. Never hardcode API keys or secrets in source code.
-2. Max risk per trade must never exceed 1.5% of portfolio equity ($1,500).
-3. Max drawdown stop: If portfolio drops below $95,000, all trading must halt.
+2. Max risk per trade must never exceed MAX_RISK_PER_TRADE_PCT of *current*
+   equity. That constant in risk_manager.py is the single source of truth --
+   never duplicate the number anywhere else.
+3. Max drawdown stop: a 5% fall from persisted starting equity latches a
+   sticky halt for the rest of the run.
 4. All trades must be defined-risk spreads (no naked options selling).
 
 ## Development Workflow & Commands
@@ -22,5 +25,5 @@ Autonomous Options Trading Agent for the Alpaca x LabLab.ai Hackathon.
 
 ## State Sync Requirement
 After writing or refactoring any code:
-1. Update `PROJECT_STATE.md` with the new changes and architecture status.
+1. Update `docs/architecture.md` with the new changes and architecture status.
 2. Add a short entry to `DEVLOG.md` detailing what was built.

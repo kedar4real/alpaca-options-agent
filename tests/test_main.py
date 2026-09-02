@@ -894,6 +894,55 @@ def test_run_cycle_before_hard_stop_runs_the_normal_pipeline(tmp_path, monkeypat
     assert ran == ["x"] and session.hard_stop_done is False
 
 
+# --------------------------------------------------------------------------- #
+# Step 3b — operator HALT file
+# --------------------------------------------------------------------------- #
+def test_halt_file_present_detects_the_file(tmp_path) -> None:
+    f = tmp_path / "HALT"
+    assert agent.halt_file_present(str(f)) is False
+    f.write_text("")
+    assert agent.halt_file_present(str(f)) is True
+
+
+def test_run_cycle_halt_file_manages_positions_but_skips_new_trades(tmp_path, monkeypatch) -> None:
+    halt = tmp_path / "HALT"
+    halt.write_text("stop")
+    cfg = Config(session_file=str(tmp_path / "s.json"), tickers=("SPY", "QQQ"),
+                 halt_file=str(halt))
+    session = Session(starting_equity=100_000.0)
+    _stub_context(monkeypatch, priority=("SPY", "QQQ"))
+
+    managed: list[str] = []
+    monkeypatch.setattr(agent, "manage_open_positions",
+                        lambda *a, **k: managed.append("managed") or [])
+    evald: list[str] = []
+    monkeypatch.setattr(agent, "evaluate_cycle_decision",
+                        lambda *a, **k: evald.append("x"))
+    snapped: list[str] = []
+    monkeypatch.setattr(agent, "get_market_snapshot",
+                        lambda symbol, creds=None: snapped.append(symbol) or {"symbol": symbol})
+
+    report = agent.run_cycle(_FakeConn(), session, cfg,
+                             now_et=datetime(2026, 9, 3, 12, 0, tzinfo=agent.ET))
+
+    assert managed == ["managed"]              # position management still ran
+    assert evald == [] and snapped == []       # no snapshots, no new-trade eval
+    assert report.opened == []
+
+
+def test_run_cycle_without_halt_file_evaluates_normally(tmp_path, monkeypatch) -> None:
+    cfg = Config(session_file=str(tmp_path / "s.json"), tickers=("SPY",),
+                 halt_file=str(tmp_path / "HALT"))          # file does NOT exist
+    session = Session(starting_equity=100_000.0)
+    _stub_context(monkeypatch, priority=("SPY",))
+    monkeypatch.setattr(agent, "get_market_snapshot", lambda symbol, creds=None: {"symbol": symbol})
+    ran: list[str] = []
+    monkeypatch.setattr(agent, "evaluate_cycle_decision",
+                        lambda *a, **k: ran.append("x") or DecisionSummary(True, "strategy", "skipped", "x"))
+    agent.run_cycle(_FakeConn(), session, cfg, now_et=datetime(2026, 9, 3, 12, 0, tzinfo=agent.ET))
+    assert ran == ["x"]
+
+
 def test_session_round_trips_offhours_markers(tmp_path) -> None:
     sess = Session(starting_equity=100_000.0)
     sess.last_heartbeat_at = "2026-09-01T10:00:00-04:00"

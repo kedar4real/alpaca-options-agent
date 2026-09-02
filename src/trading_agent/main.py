@@ -130,6 +130,7 @@ class Config:
     debate_enabled: bool = True                 # run the Bull/Bear/Judge debate on the top pick
     self_correction: bool = True                # post_trade_analysis -> lessons_learned.json
     hard_stop_et: str = "2026-09-04 10:30"      # competition hard stop (ET wall clock)
+    halt_file: str = "HALT"                     # if this file exists: manage only, no new trades
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -154,6 +155,7 @@ class Config:
             self_correction=os.environ.get("AGENT_SELF_CORRECTION", "true").strip().lower()
             not in ("0", "false", "no", "off"),
             hard_stop_et=os.environ.get("AGENT_HARD_STOP_ET", "2026-09-04 10:30"),
+            halt_file=os.environ.get("AGENT_HALT_FILE", "HALT"),
         )
 
 
@@ -922,6 +924,15 @@ def _gather_market_context(conn: AlpacaConnection, config: Config,
         return context_gatherer.MarketContext.unavailable(str(exc))
 
 
+def halt_file_present(path: str = "HALT") -> bool:
+    """True when an operator has dropped a ``HALT`` file at the repo root: keep
+    managing open positions and logging, but evaluate no new trades."""
+    try:
+        return Path(path).exists()
+    except OSError:
+        return False
+
+
 def hard_stop_reached(now_et: datetime, hard_stop_et: str) -> bool:
     """True once ``now_et`` (an ET-aware datetime) is at or past the configured
     ``"YYYY-MM-DD HH:MM"`` ET wall-clock cutoff. Empty / unparseable config ->
@@ -1039,11 +1050,21 @@ def run_cycle(conn: AlpacaConnection, session: Session, config: Config, *,
     update_sticky_halt(session, account)
     account = _account()
 
-    # 3. pre-fetch every ticker's snapshot, then rank them so the best
-    #    opportunity (richest IV-RV spread, then news sentiment) is evaluated
-    #    first under the shared 3-position cap.
+    # 2b. operator HALT file — keep managing open positions (done above) and
+    #     logging, but evaluate no new trades this cycle.
     decisions: list[DecisionSummary] = []
     opened: list[dict] = []
+    if halt_file_present(config.halt_file):
+        log.warning("HALT file present (%s) — managing open positions only, "
+                    "no new-trade evaluation this cycle", config.halt_file)
+        _accumulate_daily_activity(session, decisions, today=today,
+                                   basket_size=len(config.tickers))
+        save_session(session, config.session_file)
+        return CycleReport(decisions=decisions, closed=closed, opened=opened)
+
+    # 3. pre-fetch every ticker's snapshot, then rank them so the best
+    #    opportunity (richest IV-RV spread, then news sentiment) is evaluated
+    #    first under the shared position cap.
     snapshots: dict[str, dict] = {}
     for symbol in config.tickers:
         try:

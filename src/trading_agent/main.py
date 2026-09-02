@@ -284,12 +284,72 @@ class TrackedCondor:
 
 
 @dataclass
+class PendingOrder:
+    """An order submitted to the broker but NOT yet confirmed filled.
+
+    It counts toward the position cap (it is exposure-in-waiting), is promoted to
+    a ``TrackedCondor`` once the broker reports ``filled``, and is cancelled +
+    dropped if it sits unfilled past ``STALE_ORDER_CYCLES`` cycles. This is the
+    fix for the "recorded OPEN on submit, never filled" phantom-position bug.
+    """
+
+    order_id: str
+    symbol: str
+    structure: str
+    expiry: date
+    quantity: int
+    entry_credit: float                       # $ per spread; negative = net debit
+    legs: tuple[OrderLeg, ...] = ()
+    submitted_at: str = ""
+    cycles_waited: int = 0
+
+    def as_open_position(self) -> OpenPosition:
+        return OpenPosition(self.order_id, self.expiry, self.quantity, self.legs,
+                            underlying=self.symbol)
+
+    def to_dict(self) -> dict:
+        return {
+            "order_id": self.order_id,
+            "symbol": self.symbol,
+            "structure": self.structure,
+            "expiry": self.expiry.isoformat(),
+            "quantity": self.quantity,
+            "entry_credit": self.entry_credit,
+            "legs": [
+                {"action": lg.action, "right": lg.right,
+                 "quantity": lg.quantity, "symbol": lg.symbol}
+                for lg in self.legs
+            ],
+            "submitted_at": self.submitted_at,
+            "cycles_waited": self.cycles_waited,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "PendingOrder":
+        return cls(
+            order_id=d["order_id"],
+            symbol=d.get("symbol", "SPY"),
+            structure=d.get("structure", "iron_condor"),
+            expiry=date.fromisoformat(d["expiry"]),
+            quantity=int(d["quantity"]),
+            entry_credit=float(d["entry_credit"]),
+            legs=tuple(
+                OrderLeg(lg["action"], lg["right"], int(lg["quantity"]), lg.get("symbol"))
+                for lg in d.get("legs", [])
+            ),
+            submitted_at=d.get("submitted_at", ""),
+            cycles_waited=int(d.get("cycles_waited", 0)),
+        )
+
+
+@dataclass
 class Session:
     starting_equity: float
     account_id: str = ""
     created_at: str = ""
     trading_halted: bool = False              # sticky, persisted across restarts
     open_condors: list[TrackedCondor] = field(default_factory=list)
+    pending_orders: list[PendingOrder] = field(default_factory=list)  # submitted, not yet filled
     history: list[dict] = field(default_factory=list)  # opened/closed events
     last_daily_summary_date: str = ""
     # off-hours intelligence bookkeeping (one marker per timed behaviour)
@@ -307,6 +367,7 @@ class Session:
             "created_at": self.created_at,
             "trading_halted": self.trading_halted,
             "open_condors": [c.to_dict() for c in self.open_condors],
+            "pending_orders": [p.to_dict() for p in self.pending_orders],
             "history": self.history,
             "last_daily_summary_date": self.last_daily_summary_date,
             "last_heartbeat_at": self.last_heartbeat_at,
@@ -324,6 +385,7 @@ class Session:
             created_at=d.get("created_at", ""),
             trading_halted=bool(d.get("trading_halted", False)),
             open_condors=[TrackedCondor.from_dict(c) for c in d.get("open_condors", [])],
+            pending_orders=[PendingOrder.from_dict(p) for p in d.get("pending_orders", [])],
             history=list(d.get("history", [])),
             last_daily_summary_date=d.get("last_daily_summary_date", ""),
             last_heartbeat_at=d.get("last_heartbeat_at", ""),
@@ -396,7 +458,12 @@ def reconcile_account_state(
         starting_equity=session.starting_equity,
         current_equity=float(current_equity),
         day_start_equity=float(day_start_equity),
-        open_positions=tuple(c.as_open_position() for c in session.open_condors),
+        # Pending (submitted, not-yet-filled) orders are exposure-in-waiting and
+        # occupy a slot under the concurrent-position cap + correlation guard.
+        open_positions=(
+            tuple(c.as_open_position() for c in session.open_condors)
+            + tuple(p.as_open_position() for p in session.pending_orders)
+        ),
         trading_halted=session.trading_halted,
         risk_multiplier=float(risk_multiplier),
     )
@@ -815,6 +882,24 @@ class AlpacaConnection:
             log.error("get_all_positions failed: %s", exc)
             return []
 
+    def order_status(self, order_id: str) -> str:
+        """Lower-case broker status for one order id (``"filled"``, ``"new"``,
+        ``"canceled"`` ...). A missing order / API error -> ``"gone"`` so the
+        caller drops it rather than tracking it forever."""
+        try:
+            o = self.trading.get_order_by_id(order_id)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("order_status(%s) failed: %s", order_id, exc)
+            return "gone"
+        s = getattr(o, "status", "")
+        return str(getattr(s, "value", s)).split(".")[-1].lower()
+
+    def cancel_order(self, order_id: str) -> None:
+        try:
+            self.trading.cancel_order_by_id(order_id)
+        except Exception as exc:  # noqa: BLE001
+            log.error("cancel_order(%s) failed: %s", order_id, exc)
+
     def close_condor(self, condor: TrackedCondor) -> None:
         for leg in condor.legs:
             if not leg.symbol:
@@ -899,7 +984,8 @@ class AlpacaConnection:
 class CycleReport:
     decisions: list[DecisionSummary]      # one per basket ticker evaluated
     closed: list[dict]
-    opened: list[dict] = field(default_factory=list)
+    opened: list[dict] = field(default_factory=list)     # pending orders CONFIRMED filled this cycle
+    submitted: list[dict] = field(default_factory=list)  # new orders sent this cycle (awaiting fill)
 
     @property
     def decision(self) -> DecisionSummary | None:
@@ -958,6 +1044,7 @@ def _hard_stop_cycle(conn: AlpacaConnection, session: Session, config: Config,
                     "no further trades this session", config.hard_stop_et)
         closed, remaining = conn.flatten_all()
         session.open_condors = []
+        session.pending_orders = []      # flatten_all cancels every working order
         try:
             equity = float(conn.get_account().equity)
         except Exception:  # noqa: BLE001
@@ -1027,6 +1114,16 @@ def run_cycle(conn: AlpacaConnection, session: Session, config: Config, *,
 
     account = _account()
 
+    # 0b. RESOLVE LAST CYCLE'S ORDERS — promote confirmed fills to open positions,
+    #     drop dead orders, cancel anything still unfilled past STALE_ORDER_CYCLES.
+    #     A position is only ever "open" once the broker says it filled.
+    pending_result = reconcile_pending_orders(
+        session, status_fn=conn.order_status, cancel_fn=conn.cancel_order,
+        now_iso=now_iso,
+    )
+    promoted = pending_result["promoted"]
+    account = _account()
+
     # 1. MANAGE OPEN POSITIONS FIRST — across the whole basket
     expiring = flag_expiring_positions(account.open_positions, today=today)
     expiring_ids = {ep.position.symbol for ep in expiring}
@@ -1053,14 +1150,15 @@ def run_cycle(conn: AlpacaConnection, session: Session, config: Config, *,
     # 2b. operator HALT file — keep managing open positions (done above) and
     #     logging, but evaluate no new trades this cycle.
     decisions: list[DecisionSummary] = []
-    opened: list[dict] = []
+    submitted: list[dict] = []
     if halt_file_present(config.halt_file):
         log.warning("HALT file present (%s) — managing open positions only, "
                     "no new-trade evaluation this cycle", config.halt_file)
         _accumulate_daily_activity(session, decisions, today=today,
                                    basket_size=len(config.tickers))
         save_session(session, config.session_file)
-        return CycleReport(decisions=decisions, closed=closed, opened=opened)
+        return CycleReport(decisions=decisions, closed=closed, opened=promoted,
+                           submitted=submitted)
 
     # 3. pre-fetch every ticker's snapshot, then rank them so the best
     #    opportunity (richest IV-RV spread, then news sentiment) is evaluated
@@ -1104,12 +1202,13 @@ def run_cycle(conn: AlpacaConnection, session: Session, config: Config, *,
                               decision.debate, "=" * 60)
 
         if decision.outcome == "executed":
-            opened.append(_record_opened(session, decision, now_iso))
+            submitted.append(_record_pending(session, decision, now_iso))
             account = _account()
 
     _accumulate_daily_activity(session, decisions, today=today, basket_size=len(config.tickers))
     save_session(session, config.session_file)
-    return CycleReport(decisions=decisions, closed=closed, opened=opened)
+    return CycleReport(decisions=decisions, closed=closed, opened=promoted,
+                       submitted=submitted)
 
 
 _ACTIVITY_RETAIN_DAYS = 10
@@ -1133,7 +1232,99 @@ def _accumulate_daily_activity(session: Session, decisions: list[DecisionSummary
             del session.daily_activity[stale]
 
 
-def _record_opened(session: Session, decision: DecisionSummary, now_iso: str) -> dict:
+# Submitted orders sitting unfilled longer than this many cycles are cancelled
+# and the slot is freed (a mid-priced limit that hasn't filled in ~10 min won't).
+STALE_ORDER_CYCLES = 2
+_FILLED_STATUSES = frozenset({"filled"})
+_DEAD_STATUSES = frozenset({
+    "canceled", "cancelled", "expired", "rejected", "replaced",
+    "done_for_day", "gone",
+})
+
+
+def _tracked_from_pending(p: PendingOrder, now_iso: str) -> TrackedCondor:
+    return TrackedCondor(
+        id=p.order_id, symbol=p.symbol, structure=p.structure, expiry=p.expiry,
+        quantity=p.quantity, entry_credit=p.entry_credit, legs=p.legs,
+        opened_at=now_iso,
+    )
+
+
+def reconcile_pending_orders(
+    session: Session,
+    *,
+    status_fn,
+    cancel_fn,
+    now_iso: str,
+    stale_after_cycles: int = STALE_ORDER_CYCLES,
+) -> dict:
+    """Resolve every submitted-but-unconfirmed order against the broker:
+
+    * ``filled``                         -> promote to an open position;
+    * ``canceled`` / ``rejected`` / gone -> drop from tracking;
+    * still working past ``stale_after_cycles`` cycles -> cancel + drop (free the
+      slot; the next cycle's pipeline can re-propose if the edge still exists);
+    * status check raised                -> leave in place, try again next cycle.
+
+    Mutates ``session``. Returns ``{"promoted": [...], "abandoned": [...],
+    "stale_cancelled": [...]}`` (lists of history events)."""
+    promoted: list[dict] = []
+    abandoned: list[dict] = []
+    stale_cancelled: list[dict] = []
+    keep: list[PendingOrder] = []
+
+    for p in session.pending_orders:
+        try:
+            status = str(status_fn(p.order_id) or "").strip().lower()
+        except Exception as exc:  # noqa: BLE001 - a data blip must not lose the order
+            log.warning("pending %s %s: status check failed (%s) — keeping",
+                        p.symbol, p.order_id, exc)
+            keep.append(p)
+            continue
+
+        if status in _FILLED_STATUSES:
+            tc = _tracked_from_pending(p, now_iso)
+            session.open_condors.append(tc)
+            ev = {"kind": "opened", "at": now_iso, "id": tc.id, "symbol": tc.symbol,
+                  "structure": tc.structure, "regime": None,
+                  "detail": f"fill confirmed — {p.quantity}x {tc.symbol} {tc.structure}"}
+            session.history.append(ev)
+            promoted.append(ev)
+            log.info("FILLED %s %s [%s] — promoted from pending to open position",
+                     tc.symbol, tc.id, tc.structure)
+        elif status in _DEAD_STATUSES:
+            ev = {"kind": "order_abandoned", "at": now_iso, "id": p.order_id,
+                  "symbol": p.symbol, "structure": p.structure, "reason": status}
+            session.history.append(ev)
+            abandoned.append(ev)
+            log.warning("ORDER %s %s ended unfilled (%s) — dropped from tracking",
+                        p.symbol, p.order_id, status)
+        else:  # new / accepted / pending_new / partially_filled / held / ...
+            p.cycles_waited += 1
+            if p.cycles_waited >= stale_after_cycles:
+                try:
+                    cancel_fn(p.order_id)
+                except Exception as exc:  # noqa: BLE001
+                    log.error("could not cancel stale order %s: %s", p.order_id, exc)
+                ev = {"kind": "order_stale_cancelled", "at": now_iso,
+                      "id": p.order_id, "symbol": p.symbol,
+                      "structure": p.structure, "cycles": p.cycles_waited}
+                session.history.append(ev)
+                stale_cancelled.append(ev)
+                log.warning("ORDER %s %s unfilled after %d cycle(s) — cancelled, "
+                            "slot freed", p.symbol, p.order_id, p.cycles_waited)
+            else:
+                keep.append(p)
+
+    session.pending_orders = keep
+    return {"promoted": promoted, "abandoned": abandoned,
+            "stale_cancelled": stale_cancelled}
+
+
+def _record_pending(session: Session, decision: DecisionSummary, now_iso: str) -> dict:
+    """A trade cleared every gate and the executor submitted it. Track it as
+    PENDING — not open — until the broker confirms the fill (see
+    :func:`reconcile_pending_orders`)."""
     plan = decision.plan
     result = decision.result
     qty = int(plan.suggested_contracts)
@@ -1143,22 +1334,17 @@ def _record_opened(session: Session, decision: DecisionSummary, now_iso: str) ->
     legs = tuple(
         OrderLeg(cl.action, cl.right, qty, cl.contract.symbol) for cl in plan.legs
     )
-    condor = TrackedCondor(
-        id=order_id,
-        symbol=symbol,
-        structure=structure,
-        expiry=plan.expiry,
-        quantity=qty,
-        entry_credit=float(plan.net_credit),
-        legs=legs,
-        opened_at=now_iso,
-    )
-    session.open_condors.append(condor)
-    event = {"kind": "opened", "at": now_iso, "id": condor.id, "symbol": symbol,
+    session.pending_orders.append(PendingOrder(
+        order_id=order_id, symbol=symbol, structure=structure, expiry=plan.expiry,
+        quantity=qty, entry_credit=float(plan.net_credit), legs=legs,
+        submitted_at=now_iso,
+    ))
+    event = {"kind": "submitted", "at": now_iso, "id": order_id, "symbol": symbol,
              "structure": structure, "regime": getattr(plan, "regime", None),
              "detail": decision.order_detail}
     session.history.append(event)
-    log.info("OPENED %s %s [%s] — %s", symbol, condor.id, structure, decision.order_detail)
+    log.info("SUBMITTED %s %s [%s] — pending fill — %s",
+             symbol, order_id, structure, decision.order_detail)
     return event
 
 

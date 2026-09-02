@@ -529,6 +529,12 @@ class _FakeConn:
     def close_condor(self, condor):
         pass
 
+    def order_status(self, order_id):
+        return "new"
+
+    def cancel_order(self, order_id):
+        pass
+
 
 def _fake_executed_summary(symbol):
     plan = SimpleNamespace(
@@ -583,9 +589,12 @@ def test_run_cycle_evaluates_every_ticker_and_caps_positions_globally(tmp_path, 
 
     assert [d.outcome for d in report.decisions] == \
         ["executed", "executed", "executed", "skipped"]
-    assert len(session.open_condors) == 3                      # global cap held
-    assert {c.symbol for c in session.open_condors} == {"SPY", "QQQ", "IWM"}
-    assert len(report.opened) == 3
+    # executed orders are tracked as PENDING (not open) until the broker fills
+    # them; the global cap counts pending orders too, so it still holds at 3.
+    assert len(session.pending_orders) == 3
+    assert {p.symbol for p in session.pending_orders} == {"SPY", "QQQ", "IWM"}
+    assert session.open_condors == []
+    assert len(report.submitted) == 3 and report.opened == []
     assert report.decision.outcome == "executed"               # most-consequential
 
 
@@ -1021,6 +1030,139 @@ def test_maybe_morning_brief_only_in_window_and_once_per_day(tmp_path) -> None:
     # 09:20 ET same day — already done
     assert agent._maybe_morning_brief(
         sess, conn, cfg, now_et=datetime(2026, 9, 1, 9, 20, tzinfo=agent.ET)) is None
+
+
+# ======================================================================= #
+# Commit A — pending orders: record on FILL, not on submit (fixes 5 + 6)
+# ======================================================================= #
+from trading_agent.main import PendingOrder, reconcile_pending_orders  # noqa: E402
+
+
+def _pending(order_id="SPY-ord", symbol="SPY", structure="long_strangle",
+             qty=5, credit=-1.50, expiry=date(2026, 9, 4), waited=0):
+    return PendingOrder(
+        order_id=order_id, symbol=symbol, structure=structure, expiry=expiry,
+        quantity=qty, entry_credit=credit,
+        legs=(OrderLeg("buy", "put", qty, f"{symbol}_P"),
+              OrderLeg("buy", "call", qty, f"{symbol}_C")),
+        submitted_at="2026-09-02T12:00:00-04:00", cycles_waited=waited,
+    )
+
+
+class _OrderStatusConn(_FakeConn):
+    """Fake broker with a controllable per-order status map + a cancel spy."""
+
+    def __init__(self, statuses=None):
+        self._statuses = dict(statuses or {})
+        self.cancelled: list[str] = []
+
+    def order_status(self, order_id):
+        return self._statuses.get(order_id, "new")
+
+    def cancel_order(self, order_id):
+        self.cancelled.append(order_id)
+
+
+def test_session_round_trips_pending_orders(tmp_path) -> None:
+    sess = Session(starting_equity=100_000.0, pending_orders=[_pending(waited=1)])
+    path = str(tmp_path / "s.json")
+    agent.save_session(sess, path)
+    back = agent.load_session(path)
+    assert len(back.pending_orders) == 1
+    p = back.pending_orders[0]
+    assert p.order_id == "SPY-ord" and p.cycles_waited == 1
+    assert p.structure == "long_strangle" and p.quantity == 5
+    assert [lg.symbol for lg in p.legs] == ["SPY_P", "SPY_C"]
+
+
+def test_from_dict_defaults_pending_orders_for_a_legacy_session() -> None:
+    back = Session.from_dict({"starting_equity": 100_000.0})
+    assert back.pending_orders == []
+
+
+def test_pending_orders_count_toward_the_position_cap() -> None:
+    sess = Session(starting_equity=100_000.0,
+                   open_condors=[tracked("c1"), tracked("c2")],
+                   pending_orders=[_pending("p1"), _pending("p2")])
+    acct = reconcile_account_state(sess, current_equity=100_000.0,
+                                   day_start_equity=100_000.0)
+    assert len(acct.open_positions) == 4
+    # OpenPosition.symbol carries the tracking id in this codebase
+    assert {op.symbol for op in acct.open_positions} == {"c1", "c2", "p1", "p2"}
+
+
+def test_reconcile_promotes_a_filled_order_to_an_open_position() -> None:
+    sess = Session(starting_equity=100_000.0, pending_orders=[_pending("f1")])
+    conn = _OrderStatusConn(statuses={"f1": "filled"})
+    out = reconcile_pending_orders(sess, status_fn=conn.order_status,
+                                   cancel_fn=conn.cancel_order,
+                                   now_iso="2026-09-02T12:05:00-04:00")
+    assert sess.pending_orders == []
+    assert [c.id for c in sess.open_condors] == ["f1"]
+    assert sess.open_condors[0].structure == "long_strangle"
+    assert len(out["promoted"]) == 1
+    assert out["abandoned"] == [] and out["stale_cancelled"] == []
+    assert any(e["kind"] == "opened" and e["id"] == "f1" for e in sess.history)
+    assert conn.cancelled == []
+
+
+def test_reconcile_drops_a_dead_order_without_opening_a_position() -> None:
+    sess = Session(starting_equity=100_000.0, pending_orders=[_pending("d1")])
+    conn = _OrderStatusConn(statuses={"d1": "canceled"})
+    out = reconcile_pending_orders(sess, status_fn=conn.order_status,
+                                   cancel_fn=conn.cancel_order,
+                                   now_iso="2026-09-02T12:05:00-04:00")
+    assert sess.pending_orders == [] and sess.open_condors == []
+    assert len(out["abandoned"]) == 1
+    assert any(e["kind"] == "order_abandoned" and e["id"] == "d1" for e in sess.history)
+
+
+def test_reconcile_keeps_a_working_order_one_cycle_then_cancels_it() -> None:
+    sess = Session(starting_equity=100_000.0, pending_orders=[_pending("w1", waited=0)])
+    conn = _OrderStatusConn(statuses={"w1": "new"})
+
+    reconcile_pending_orders(sess, status_fn=conn.order_status,
+                             cancel_fn=conn.cancel_order, now_iso="t1")
+    assert [p.order_id for p in sess.pending_orders] == ["w1"]
+    assert sess.pending_orders[0].cycles_waited == 1
+    assert conn.cancelled == []
+
+    out2 = reconcile_pending_orders(sess, status_fn=conn.order_status,
+                                    cancel_fn=conn.cancel_order, now_iso="t2")
+    assert sess.pending_orders == []
+    assert conn.cancelled == ["w1"]
+    assert len(out2["stale_cancelled"]) == 1
+    assert any(e["kind"] == "order_stale_cancelled" and e["id"] == "w1"
+               for e in sess.history)
+
+
+def test_reconcile_leaves_a_pending_order_in_place_when_status_check_errors() -> None:
+    sess = Session(starting_equity=100_000.0, pending_orders=[_pending("e1")])
+
+    def boom(_):
+        raise RuntimeError("alpaca 500")
+
+    out = reconcile_pending_orders(sess, status_fn=boom, cancel_fn=lambda _: None,
+                                   now_iso="t")
+    assert [p.order_id for p in sess.pending_orders] == ["e1"]
+    assert out == {"promoted": [], "abandoned": [], "stale_cancelled": []}
+
+
+def test_run_cycle_records_an_executed_trade_as_pending_not_open(tmp_path, monkeypatch) -> None:
+    cfg = Config(session_file=str(tmp_path / "s.json"), tickers=("SPY",))
+    session = Session(starting_equity=100_000.0)
+    _stub_context(monkeypatch, priority=("SPY",))
+    monkeypatch.setattr(agent, "get_market_snapshot",
+                        lambda symbol, creds=None: {"symbol": symbol})
+    monkeypatch.setattr(agent, "evaluate_cycle_decision",
+                        lambda snapshot, account, **kw: _fake_executed_summary(snapshot["symbol"]))
+
+    report = agent.run_cycle(_FakeConn(), session, cfg, now_et=None)
+
+    assert session.open_condors == []                       # NOT opened on submit
+    assert [p.order_id for p in session.pending_orders] == ["SPY-ord"]
+    assert [e["id"] for e in report.submitted] == ["SPY-ord"]
+    assert report.opened == []
 
 
 def test_maybe_post_mortem_after_close_once_per_day(tmp_path) -> None:

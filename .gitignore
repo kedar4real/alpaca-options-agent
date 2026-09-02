@@ -22,3 +22,8 @@ session.json.bak
 lessons_learned.json
 lessons_learned.json.tmp
 logs/
+
+# runtime state / local backups
+iv_history.csv
+session.json.bak*
+session.json.*-retired-*

@@ -36,6 +36,14 @@ MAX_CONCURRENT_POSITIONS = 4
 EXPIRY_CLOSE_TRADING_DAYS = 1      # flag when this close to expiry
 CONTRACT_MULTIPLIER = 100
 
+# (4c) Long-volatility concentration. Under MACRO_DANGER every new trade is a
+# debit long strangle; without a cap the book becomes N leveraged bets on the
+# same catalyst. Total premium at risk across open + pending long-vol positions
+# may not exceed MAX_LONG_VOL_DEBIT_PCT of current equity, and no more than
+# MAX_LONG_VOL_POSITIONS may be open at once.
+MAX_LONG_VOL_DEBIT_PCT = 0.04
+MAX_LONG_VOL_POSITIONS = 2
+
 # Macro guard: on a High-Impact macro day (FOMC / CPI / NFP) the caller sets
 # AccountState.risk_multiplier to this, so gate 1's *effective* cap is halved for
 # that cycle. It can only tighten — a multiplier is clamped to <= 1.0 in
@@ -92,6 +100,15 @@ class OpenPosition:
     quantity: int
     legs: tuple[OrderLeg, ...] = ()
     underlying: str | None = None     # basket ticker (for the correlation guard)
+    entry_credit: float = 0.0         # $ per spread; negative = net debit (long-vol)
+    structure: str = ""               # iron_condor | long_strangle | ...
+
+    @property
+    def debit_dollars(self) -> float:
+        """Total premium paid for this position when it is a net debit (long
+        vol), else 0.0."""
+        return abs(self.entry_credit) * self.quantity * CONTRACT_MULTIPLIER \
+            if self.entry_credit < 0 else 0.0
 
 
 @dataclass(frozen=True)
@@ -249,6 +266,29 @@ def check_order(
                     )
                 break
         checks["correlation_guard"] = ok
+
+    # (4c) long-volatility concentration — only applies when THIS order is a net
+    #      debit (a long strangle). Caps count + total premium at risk across all
+    #      open + pending long-vol positions.
+    if order.net_credit < 0:
+        lv = [p for p in account.open_positions if p.entry_credit < 0]
+        lv_count_ok = len(lv) < MAX_LONG_VOL_POSITIONS
+        used = sum(p.debit_dollars for p in lv)
+        new = abs(order.net_credit) * order.quantity * CONTRACT_MULTIPLIER
+        lv_cap = MAX_LONG_VOL_DEBIT_PCT * account.current_equity
+        lv_debit_ok = (used + new) <= lv_cap
+        checks["long_vol_concentration"] = lv_count_ok and lv_debit_ok
+        if not lv_count_ok:
+            blocks.append(
+                f"long-vol concentration: {len(lv)} open long-vol positions >= "
+                f"max {MAX_LONG_VOL_POSITIONS}"
+            )
+        if not lv_debit_ok:
+            blocks.append(
+                f"long-vol concentration: total long-vol debit "
+                f"${used + new:,.0f} > ${lv_cap:,.0f} "
+                f"({MAX_LONG_VOL_DEBIT_PCT:.0%} of current equity)"
+            )
 
     # (1) max risk per trade — the 1.5% cap. A macro-guard multiplier can only
     #     tighten it (clamped to <= 1.0); it can never raise the ceiling.

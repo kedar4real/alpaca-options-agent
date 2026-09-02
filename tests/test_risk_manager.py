@@ -247,6 +247,60 @@ def test_correlation_guard_is_inert_without_clusters() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Gate 4c — long-volatility concentration (<= 4% debit, <= 2 positions)
+# --------------------------------------------------------------------------- #
+def _lv_legs(qty: int = 1) -> tuple[OrderLeg, ...]:
+    return (OrderLeg("buy", "put", qty), OrderLeg("buy", "call", qty))
+
+
+def _lv_order(debit_per_spread: float, qty: int) -> rm.ProposedOrder:
+    return rm.ProposedOrder(
+        wing_width=0.0, net_credit=-debit_per_spread, quantity=qty,
+        legs=_lv_legs(qty), max_loss=debit_per_spread * 100,
+    )
+
+
+def _lv_pos(debit_per_spread: float, qty: int, tid: str) -> rm.OpenPosition:
+    return rm.OpenPosition(tid, FRIDAY, qty, _lv_legs(qty), underlying="X",
+                           entry_credit=-debit_per_spread, structure="long_strangle")
+
+
+def test_long_vol_position_count_at_the_limit_blocks_a_third() -> None:
+    two = (_lv_pos(1.0, 1, "a"), _lv_pos(1.0, 1, "b"))
+    d = rm.check_order(_lv_order(0.50, 1), account(100_000, positions=two))
+    assert d.checks["long_vol_concentration"] is False
+    assert any("open long-vol positions" in b for b in d.blocks)
+    assert d.approved is False
+
+
+def test_second_long_vol_position_is_allowed() -> None:
+    one = (_lv_pos(1.0, 1, "a"),)
+    d = rm.check_order(_lv_order(0.50, 1), account(100_000, positions=one))
+    assert d.checks["long_vol_concentration"] is True
+
+
+def test_long_vol_debit_exactly_at_the_4pct_cap_is_allowed() -> None:
+    existing = (_lv_pos(3.0, 10, "a"),)                    # 3.0 * 10 * 100 = $3,000
+    d = rm.check_order(_lv_order(1.0, 10), account(100_000, positions=existing))  # + $1,000
+    assert d.checks["long_vol_concentration"] is True      # $4,000 == 4% of $100k, inclusive
+
+
+def test_long_vol_debit_one_notch_over_the_cap_is_blocked() -> None:
+    existing = (_lv_pos(3.0, 10, "a"),)                    # $3,000
+    d = rm.check_order(_lv_order(1.01, 10), account(100_000, positions=existing))  # + $1,010
+    assert d.checks["long_vol_concentration"] is False
+    assert any("total long-vol debit" in b for b in d.blocks)
+
+
+def test_concentration_gate_does_not_touch_credit_structures() -> None:
+    two_lv = (_lv_pos(1.0, 1, "a"), _lv_pos(1.0, 1, "b"))
+    d = rm.check_order(order(wing=5.0, credit=2.0, qty=1),
+                       account(100_000, positions=two_lv))
+    assert "long_vol_concentration" not in d.checks       # net-credit order is exempt
+    assert d.approved is True
+
+
+# --------------------------------------------------------------------------- #
 # Gate 5 — defined-risk invariant
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize(

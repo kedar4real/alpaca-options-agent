@@ -246,9 +246,10 @@ class TrackedCondor:
     def as_open_position(self) -> OpenPosition:
         # OpenPosition.symbol carries our tracking id so flag_expiring_positions
         # round-trips it back to us; underlying carries the basket ticker for the
-        # correlation guard.
+        # correlation guard; entry_credit / structure feed the long-vol cap.
         return OpenPosition(self.id, self.expiry, self.quantity, self.legs,
-                            underlying=self.symbol)
+                            underlying=self.symbol, entry_credit=self.entry_credit,
+                            structure=self.structure)
 
     def to_dict(self) -> dict:
         return {
@@ -305,7 +306,8 @@ class PendingOrder:
 
     def as_open_position(self) -> OpenPosition:
         return OpenPosition(self.order_id, self.expiry, self.quantity, self.legs,
-                            underlying=self.symbol)
+                            underlying=self.symbol, entry_credit=self.entry_credit,
+                            structure=self.structure)
 
     def to_dict(self) -> dict:
         return {

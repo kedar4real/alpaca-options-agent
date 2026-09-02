@@ -1352,6 +1352,102 @@ def test_run_cycle_reconciles_the_open_book_against_broker_positions(tmp_path, m
     assert session.open_condors == []          # ghost dropped — broker holds none of its legs
 
 
+# ======================================================================= #
+# Step 4 — multi-instrument scanner: AGENT_UNIVERSE, scan table, time-box
+# ======================================================================= #
+from trading_agent.main import parse_universe, render_scan_table  # noqa: E402
+
+
+def test_parse_universe_upper_trims_dedupes_and_drops_blanks() -> None:
+    assert parse_universe(" spy, qqq ,,SPY\n iwm ") == ("SPY", "QQQ", "IWM")
+    assert parse_universe("") == ()
+
+
+def test_config_from_env_prefers_agent_universe(monkeypatch) -> None:
+    monkeypatch.setenv("AGENT_UNIVERSE", "spy,gld,tlt")
+    monkeypatch.setenv("AGENT_TICKERS", "AAA,BBB")
+    assert agent.Config.from_env().tickers == ("SPY", "GLD", "TLT")
+
+
+def test_config_from_env_falls_back_to_agent_tickers_then_default(monkeypatch) -> None:
+    monkeypatch.delenv("AGENT_UNIVERSE", raising=False)
+    monkeypatch.setenv("AGENT_TICKERS", "aaa,bbb")
+    assert agent.Config.from_env().tickers == ("AAA", "BBB")
+    monkeypatch.delenv("AGENT_TICKERS", raising=False)
+    assert agent.Config.from_env().tickers == agent.DEFAULT_UNIVERSE
+    assert len(agent.DEFAULT_UNIVERSE) == 12
+
+
+def _scan_snap(sym, *, price, iv, rv, closes):
+    return {"symbol": sym, "current_price": price, "atm_iv": iv, "realized_vol": rv,
+            "iv_rv_spread": None if iv is None or rv is None else round(iv - rv, 4),
+            "daily_closes": closes,
+            "iv_regime": SimpleNamespace(trade_eligible=iv is not None and iv > 0.08)}
+
+
+def test_render_scan_table_one_line_per_symbol_with_gate_flags() -> None:
+    flat = [100.0] * 12
+    trend = [100.0 + i for i in range(12)]
+    snaps = {
+        "SPY": _scan_snap("SPY", price=517.2, iv=0.13, rv=0.11, closes=flat),   # IVRV +.02 ok, ER ok
+        "QQQ": _scan_snap("QQQ", price=470.0, iv=0.12, rv=0.115, closes=trend),  # IVRV +.005 FAIL, ER FAIL
+    }
+    scan = {
+        "SPY": DecisionSummary(True, "executor", "executed", "submitted order X"),
+        "QQQ": DecisionSummary(True, "strategy", "skipped", "no tradeable regime"),
+        "IWM": DecisionSummary(False, "precheck", "skipped", "already holds a position or working order in IWM"),
+    }
+    out = render_scan_table(("SPY", "QQQ", "IWM"), snaps, scan)
+    lines = out.splitlines()
+    assert "SCAN TABLE" in lines[0]
+    spy = next(l for l in lines if l.strip().startswith("SPY"))
+    qqq = next(l for l in lines if l.strip().startswith("QQQ"))
+    iwm = next(l for l in lines if l.strip().startswith("IWM"))
+    assert "IV 0.130" in spy and "RV 0.110" in spy and "executed" in spy
+    assert "FAIL" in qqq and "skipped" in qqq
+    assert "already holds" in iwm            # no snapshot -> falls back to the decision reason
+
+
+def test_run_cycle_time_box_defers_the_slow_tail_of_the_universe(tmp_path, monkeypatch) -> None:
+    cfg = Config(session_file=str(tmp_path / "s.json"),
+                 tickers=("A", "B", "C", "D"), scan_time_box_s=150)
+    session = Session(starting_equity=100_000.0)
+    _stub_context(monkeypatch)
+    monkeypatch.setattr(agent, "get_market_snapshot",
+                        lambda symbol, creds=None: {"symbol": symbol})
+    monkeypatch.setattr(agent, "evaluate_cycle_decision",
+                        lambda *a, **k: DecisionSummary(True, "strategy", "skipped", "x"))
+    clock = iter([0, 60, 120, 180, 240, 300, 360])      # scan_start=0; C,D past the 150s box
+    monkeypatch.setattr(agent.time, "monotonic", lambda: next(clock))
+
+    caplog_msgs: list[str] = []
+    monkeypatch.setattr(agent.log, "warning",
+                        lambda msg, *a: caplog_msgs.append(msg % a if a else msg))
+    tables: list[str] = []
+    monkeypatch.setattr(agent.offhours_log, "info",
+                        lambda msg, *a: tables.append(msg % a if a else msg))
+
+    agent.run_cycle(_FakeConn(), session, cfg, now_et=None)
+
+    assert any("deferred 2 symbol(s) this cycle: C, D" in m for m in caplog_msgs)
+    tbl = "\n".join(tables)
+    assert "deferred — scan time-box" in tbl        # C and D appear in the scan table
+
+
+def test_run_cycle_logs_a_scan_table(tmp_path, monkeypatch, caplog) -> None:
+    cfg = Config(session_file=str(tmp_path / "s.json"), tickers=("SPY",))
+    session = Session(starting_equity=100_000.0)
+    _stub_context(monkeypatch)
+    monkeypatch.setattr(agent, "get_market_snapshot",
+                        lambda symbol, creds=None: _scan_snap(symbol, price=500.0, iv=0.2,
+                                                              rv=0.1, closes=[100.0] * 12))
+    monkeypatch.setattr(agent, "evaluate_cycle_decision",
+                        lambda *a, **k: DecisionSummary(True, "strategy", "skipped", "no regime"))
+    with caplog.at_level("INFO", logger="agent.offhours"):
+        agent.run_cycle(_FakeConn(), session, cfg, now_et=None)
+    assert "SCAN TABLE" in caplog.text and "SPY" in caplog.text
+
+
 def test_maybe_post_mortem_after_close_once_per_day(tmp_path) -> None:
     cfg = Config(session_file=str(tmp_path / "s.json"), tickers=("SPY", "QQQ"))
     sess = Session(starting_equity=100_000.0)

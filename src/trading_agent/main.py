@@ -67,7 +67,7 @@ from . import context_gatherer
 from . import intelligence_hub
 from . import offhours
 from . import risk_officer
-from .data import IV_HISTORY_PATH, get_market_snapshot
+from .data import IV_HISTORY_PATH, STATIC_IV_THRESHOLD, get_market_snapshot
 from .risk_manager import (
     DAILY_LOSS_HALT_PCT,
     MAX_CONCURRENT_POSITIONS,
@@ -79,13 +79,26 @@ from .risk_manager import (
     flag_expiring_positions,
     macro_risk_multiplier,
 )
-from .strategy import build_strategy_plan, rank_basket
+from .strategy import (
+    MIN_CREDIT_TO_WIDTH,
+    MIN_IV_RV_SPREAD,
+    RANGE_BOUND_ER,
+    build_strategy_plan,
+    efficiency_ratio,
+    rank_basket,
+)
 from . import executor as executor_mod
 
 # Structures whose entry cost is a net debit (max loss = premium paid), so
 # decide_exit() scores them on % of the debit rather than % of a credit.
 DEBIT_STRUCTURES = frozenset({"long_strangle"})
 DEFAULT_TICKERS = ("SPY", "QQQ", "IWM", "TLT")
+# Step 4 — the multi-instrument scan universe (liquid, optionable ETFs across
+# equity / rates / credit / commodity / EM sleeves).
+DEFAULT_UNIVERSE = (
+    "SPY", "QQQ", "IWM", "DIA", "GLD", "SLV",
+    "TLT", "XLF", "XLE", "XLK", "EEM", "HYG",
+)
 
 log = logging.getLogger("agent")
 offhours_log = logging.getLogger("agent.offhours")   # also -> agent_activity.log
@@ -111,6 +124,17 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def parse_universe(raw: str) -> tuple[str, ...]:
+    """``"spy, qqq ,, IWM"`` -> ``("SPY", "QQQ", "IWM")``. Upper-cased, trimmed,
+    de-duplicated (first occurrence wins), blanks dropped."""
+    out: list[str] = []
+    for tok in (raw or "").replace("\n", ",").split(","):
+        sym = tok.strip().upper()
+        if sym and sym not in out:
+            out.append(sym)
+    return tuple(out)
+
+
 @dataclass(frozen=True)
 class Config:
     loop_interval_s: int = 300                  # competition window: 5-min cadence
@@ -122,7 +146,8 @@ class Config:
     profit_target_fraction: float = 0.35        # competition window: take credit at 35%
     stop_loss_multiple: float = 2.0
     debit_stop_fraction: float = 0.50           # close a debit trade down this much of the premium
-    tickers: tuple[str, ...] = DEFAULT_TICKERS  # basket evaluated each cycle
+    tickers: tuple[str, ...] = DEFAULT_TICKERS  # scan universe evaluated each cycle
+    scan_time_box_s: int = 150                  # per-cycle budget for gathering snapshots
     # off-hours intelligence (observability only — never touches the trade path)
     activity_log_file: str = "logs/agent_activity.log"
     heartbeat_minutes: int = 60                 # cadence of the hourly HEARTBEAT line
@@ -134,9 +159,13 @@ class Config:
 
     @classmethod
     def from_env(cls) -> "Config":
-        raw = os.environ.get("AGENT_TICKERS", "")
-        tickers = tuple(t.strip().upper() for t in raw.split(",") if t.strip()) or DEFAULT_TICKERS
+        # AGENT_UNIVERSE is the Step-4 scan universe; AGENT_TICKERS is kept as a
+        # back-compatible alias. Either one, comma-separated; empty -> the 12-name
+        # default universe.
+        raw = os.environ.get("AGENT_UNIVERSE") or os.environ.get("AGENT_TICKERS", "")
+        tickers = parse_universe(raw) or DEFAULT_UNIVERSE
         return cls(
+            scan_time_box_s=_env_int("AGENT_SCAN_TIMEBOX_SECONDS", 150),
             loop_interval_s=_env_int("AGENT_LOOP_INTERVAL_SECONDS", 300),
             log_level=os.environ.get("AGENT_LOG_LEVEL", "INFO").upper(),
             env_file=os.environ.get("AGENT_ENV_FILE") or None,
@@ -1053,6 +1082,60 @@ def _gather_market_context(conn: AlpacaConnection, config: Config,
         return context_gatherer.MarketContext.unavailable(str(exc))
 
 
+def _fmt(x, spec: str) -> str:
+    try:
+        return format(float(x), spec)
+    except (TypeError, ValueError):
+        return "  n/a"
+
+
+def render_scan_table(
+    universe: tuple[str, ...],
+    snapshots: dict[str, dict],
+    scan: dict[str, "DecisionSummary"],
+    *,
+    min_iv_rv: float = MIN_IV_RV_SPREAD,
+    er_threshold: float = RANGE_BOUND_ER,
+    static_iv_floor: float = STATIC_IV_THRESHOLD,
+    min_ctw: float = MIN_CREDIT_TO_WIDTH,
+) -> str:
+    """One line per universe symbol: price, ATM IV, RV, IV-RV (pass/fail vs
+    ``min_iv_rv``), ER (pass/fail vs ``er_threshold``), the static IV floor
+    (pass/fail vs ``static_iv_floor``), best credit/width (vs ``min_ctw`` when a
+    condor/vertical was built), and the decision. Observability only."""
+    head = (f"SCAN TABLE  (IV-RV>={min_iv_rv:+.3f}  ER<{er_threshold:.2f}  "
+            f"floor>{static_iv_floor:.2f}  c/w>={min_ctw:.0%})")
+    lines = [head, "-" * len(head)]
+    for sym in universe:
+        snap = snapshots.get(sym)
+        dec = scan.get(sym)
+        if snap is None:
+            reason = dec.reason if dec else "no snapshot this cycle"
+            lines.append(f"  {sym:<4}  {reason}")
+            continue
+        iv = snap.get("atm_iv")
+        rv = snap.get("realized_vol")
+        ivrv = snap.get("iv_rv_spread")
+        er = efficiency_ratio(snap.get("daily_closes"))
+        floor_ok = bool(getattr(snap.get("iv_regime"), "trade_eligible", False))
+        ivrv_ok = ivrv is not None and ivrv >= min_iv_rv
+        er_ok = er is not None and er < er_threshold
+        plan = getattr(dec, "plan", None) if dec else None
+        ctw = getattr(plan, "credit_to_width", None)
+        ctw_s = f"c/w {ctw:+.0%}{'ok' if ctw is not None and ctw >= min_ctw else 'FAIL'}" \
+            if ctw is not None else "c/w   -- "
+        decision_s = (f"{dec.outcome} [{dec.stage}] {dec.reason}"[:72]
+                      if dec else "not evaluated")
+        lines.append(
+            f"  {sym:<4}  px {_fmt(snap.get('current_price'), '7.2f')}  "
+            f"IV {_fmt(iv, '5.3f')}  RV {_fmt(rv, '5.3f')}  "
+            f"IVRV {_fmt(ivrv, '+6.3f')} {'ok  ' if ivrv_ok else 'FAIL'}  "
+            f"ER {_fmt(er, '4.2f')} {'ok  ' if er_ok else 'FAIL'}  "
+            f"floor {'ok  ' if floor_ok else 'FAIL'}  {ctw_s}  -> {decision_s}"
+        )
+    return "\n".join(lines)
+
+
 def halt_file_present(path: str = "HALT") -> bool:
     """True when an operator has dropped a ``HALT`` file at the repo root: keep
     managing open positions and logging, but evaluate no new trades."""
@@ -1216,29 +1299,42 @@ def run_cycle(conn: AlpacaConnection, session: Session, config: Config, *,
         return CycleReport(decisions=decisions, closed=closed, opened=promoted,
                            submitted=submitted)
 
-    # 3. pre-fetch every ticker's snapshot, then rank them so the best
-    #    opportunity (richest IV-RV spread, then news sentiment) is evaluated
-    #    first under the shared position cap.
+    # 3. SCAN the universe: one narrowed snapshot per symbol, inside a per-cycle
+    #    time-box (drop the slowest for this cycle so the loop still fits its
+    #    interval). ``scan`` collects one DecisionSummary per symbol for the table.
+    scan: dict[str, DecisionSummary] = {}
     snapshots: dict[str, dict] = {}
+    scan_start = time.monotonic()
+    deferred: list[str] = []
     for symbol in config.tickers:
+        if time.monotonic() - scan_start > config.scan_time_box_s:
+            deferred.append(symbol)
+            scan[symbol] = DecisionSummary(False, "precheck", "skipped",
+                                           "deferred — scan time-box", market_context=ctx_str)
+            continue
         try:
             snapshots[symbol] = get_market_snapshot(symbol, creds=conn.creds)
         except Exception as exc:  # noqa: BLE001 - one ticker's data must not kill the cycle
             log.error("snapshot for %s failed: %s", symbol, exc)
-            decisions.append(DecisionSummary(
-                False, "precheck", "error", f"{symbol}: snapshot failed — {exc}",
-                market_context=ctx_str,
-            ))
+            d = DecisionSummary(False, "precheck", "error",
+                                f"{symbol}: snapshot failed — {exc}", market_context=ctx_str)
+            decisions.append(d)
+            scan[symbol] = d
+    if deferred:
+        log.warning("scan time-box %ds hit — deferred %d symbol(s) this cycle: %s",
+                    config.scan_time_box_s, len(deferred), ", ".join(deferred))
 
     # Per-symbol dedup: drop tickers the agent already has exposure to BEFORE
     # ranking — a held name must not be re-selected when a fill frees a slot.
     held = held_underlyings(session)
     for symbol in sorted(set(snapshots) & held):
-        decisions.append(DecisionSummary(
+        d = DecisionSummary(
             False, "precheck", "skipped",
             f"already holds a position or working order in {symbol}",
             market_context=ctx_str,
-        ))
+        )
+        decisions.append(d)
+        scan[symbol] = d
         log.info("[%s] DECISION SUMMARY — Skipped at [precheck]: already holds a "
                  "position or working order", symbol)
     candidates = [s for s in snapshots if s not in held]
@@ -1268,6 +1364,7 @@ def run_cycle(conn: AlpacaConnection, session: Session, config: Config, *,
             market_context=ctx_str, context=market_context, **kw,
         )
         decisions.append(decision)
+        scan[symbol] = decision
         log.info("[%s] %s", symbol, decision.render())
         if decision.debate:
             offhours_log.info("DEBATE [%s]\n%s\n%s\n%s", symbol, "=" * 60,
@@ -1276,6 +1373,9 @@ def run_cycle(conn: AlpacaConnection, session: Session, config: Config, *,
         if decision.outcome == "executed":
             submitted.append(_record_pending(session, decision, now_iso))
             account = _account()
+
+    offhours_log.info("%s\n%s\n%s", "=" * 60,
+                      render_scan_table(config.tickers, snapshots, scan), "=" * 60)
 
     _accumulate_daily_activity(session, decisions, today=today, basket_size=len(config.tickers))
     save_session(session, config.session_file)

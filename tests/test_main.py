@@ -553,6 +553,57 @@ def test_strangle_expiry_still_forces_a_close() -> None:
     assert decide_exit(_debit_val(-2.00), is_expiring=True) == "expiry"
 
 
+# ---- D3: catalyst hold — suspend the debit stop for a long-vol position that
+#         is still alive for the MACRO_DANGER catalyst it was bought for -------
+def _cat_val(cost_to_close, *, debit=2.00, qty=8, expiry=date(2026, 9, 4)):
+    c = TrackedCondor(id="cat", symbol="SPY", expiry=expiry, quantity=qty,
+                      entry_credit=-debit, legs=CONDOR_LEGS[:2],
+                      structure="long_strangle")
+    return CondorValuation(c, cost_to_close)
+
+
+def test_catalyst_hold_suppresses_the_debit_stop_loss() -> None:
+    v = _cat_val(-0.80)                     # worth 0.80 vs 2.00 paid -> -60%
+    assert decide_exit(v, is_expiring=False, catalyst_hold=False) == "stop-loss"
+    assert decide_exit(v, is_expiring=False, catalyst_hold=True) is None
+
+
+def test_catalyst_hold_keeps_the_profit_target_and_the_hard_expiry() -> None:
+    assert decide_exit(_cat_val(-3.00), is_expiring=False, catalyst_hold=True) == "profit-target"
+    assert decide_exit(_cat_val(-0.50), is_expiring=True, catalyst_hold=True) == "expiry"
+
+
+def test_manage_holds_a_catalyst_strangle_through_a_60pct_drawdown(caplog) -> None:
+    strangle = TrackedCondor(id="fri", symbol="SPY", expiry=date(2026, 9, 4),
+                             quantity=8, entry_credit=-2.00, legs=CONDOR_LEGS[:2],
+                             structure="long_strangle")
+    sess = _session_with(strangle)
+    closed: list[str] = []
+    with caplog.at_level("INFO", logger="agent"):
+        events = manage_open_positions(
+            sess, [CondorValuation(strangle, -0.80)], expiring_ids=set(),
+            close_fn=lambda c: closed.append(c.id), config=CFG,
+            now_iso="2026-09-03T12:00:00-04:00", catalyst_date=date(2026, 9, 4),
+        )
+    assert events == [] and closed == []
+    assert [c.id for c in sess.open_condors] == ["fri"]
+    assert "catalyst hold" in caplog.text.lower()
+
+
+def test_manage_stops_out_a_pre_catalyst_strangle_on_the_same_mark() -> None:
+    strangle = TrackedCondor(id="thu", symbol="SPY", expiry=date(2026, 9, 3),
+                             quantity=8, entry_credit=-2.00, legs=CONDOR_LEGS[:2],
+                             structure="long_strangle")
+    sess = _session_with(strangle)
+    closed: list[str] = []
+    events = manage_open_positions(
+        sess, [CondorValuation(strangle, -0.80)], expiring_ids=set(),
+        close_fn=lambda c: closed.append(c.id), config=CFG,
+        now_iso="2026-09-02T12:00:00-04:00", catalyst_date=date(2026, 9, 4),
+    )
+    assert closed == ["thu"] and events and events[0]["reason"] == "stop-loss"
+
+
 def test_credit_structure_logic_is_unchanged() -> None:
     # a plain iron condor still scores on captured fraction of the credit
     c = TrackedCondor(id="ic", expiry=date(2099, 1, 1), quantity=3,

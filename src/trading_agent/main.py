@@ -545,6 +545,7 @@ def decide_exit(
     profit_target_fraction: float = 0.35,
     stop_loss_multiple: float = 2.0,
     debit_stop_fraction: float = 0.50,
+    catalyst_hold: bool = False,
 ) -> str | None:
     """Should this position be closed now? Checked in the spec's order:
     profit target, then stop loss, then expiry. First match wins.
@@ -555,6 +556,11 @@ def decide_exit(
     premium; stop at -``debit_stop_fraction`` of the premium (you can never lose
     more than the premium, so the credit "2x" stop does not apply).
 
+    ``catalyst_hold``: this is a long-vol position still alive for the
+    MACRO_DANGER catalyst it was bought for — the -50% stop is suspended (the
+    whole thesis is a large move *at* the event), but the profit target and the
+    hard expiry / hard-stop flatten still apply.
+
     An ``orphan_leg`` (a single broker leg adopted by ``reconcile_open_book`` —
     e.g. one side of a strangle that filled alone) has no meaningful entry price,
     so it is closed on expiry only, never on P&L math."""
@@ -563,7 +569,7 @@ def decide_exit(
     if valuation.condor.structure in DEBIT_STRUCTURES:
         if valuation.gain_fraction >= profit_target_fraction:
             return "profit-target"
-        if valuation.gain_fraction <= -debit_stop_fraction:
+        if not catalyst_hold and valuation.gain_fraction <= -debit_stop_fraction:
             return "stop-loss"
     else:
         if valuation.captured_fraction >= profit_target_fraction:
@@ -596,19 +602,37 @@ def manage_open_positions(
     close_fn,
     config: Config,
     now_iso: str,
+    catalyst_date: date | None = None,
 ) -> list[dict]:
     """Close every condor that hits a trigger. Mutates ``session`` (removes the
-    condor, appends a history event). Returns the close events."""
+    condor, appends a history event). Returns the close events.
+
+    ``catalyst_date`` (set only under MACRO_DANGER): a long-vol position whose
+    expiry is on/after it has its -50% stop suspended — "catalyst hold" — and is
+    logged rather than closed on a stop-worthy mark."""
     closed: list[dict] = []
     for val in valuations:
+        hold = (
+            catalyst_date is not None
+            and val.condor.structure in DEBIT_STRUCTURES
+            and val.condor.expiry >= catalyst_date
+        )
         reason = decide_exit(
             val,
             is_expiring=val.condor.id in expiring_ids,
             profit_target_fraction=config.profit_target_fraction,
             stop_loss_multiple=config.stop_loss_multiple,
             debit_stop_fraction=config.debit_stop_fraction,
+            catalyst_hold=hold,
         )
         if reason is None:
+            if hold and val.gain_fraction <= -config.debit_stop_fraction:
+                log.info(
+                    "catalyst hold — %s %s at %.0f%% of premium; -%.0f%% stop "
+                    "suspended until the %s catalyst clears",
+                    val.condor.symbol, val.condor.id, val.gain_fraction * 100,
+                    config.debit_stop_fraction * 100, catalyst_date,
+                )
             continue
         try:
             close_fn(val.condor)
@@ -1155,9 +1179,14 @@ def run_cycle(conn: AlpacaConnection, session: Session, config: Config, *,
     expiring = flag_expiring_positions(account.open_positions, today=today)
     expiring_ids = {ep.position.symbol for ep in expiring}
     valuations = conn.value_condors(session.open_condors)
+    catalyst_date = (
+        market_context.next_macro_event_date()
+        if "MACRO_DANGER" in market_context.regime_flags() else None
+    )
     closed = manage_open_positions(
         session, valuations, expiring_ids,
         close_fn=conn.close_condor, config=config, now_iso=now_iso,
+        catalyst_date=catalyst_date,
     )
 
     # 2a. self-correction: ask the LLM for a "lesson learned" on each close and

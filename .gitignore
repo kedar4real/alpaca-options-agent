@@ -27,3 +27,5 @@ logs/
 iv_history.csv
 session.json.bak*
 session.json.*-retired-*
+HALT
+HALT.*

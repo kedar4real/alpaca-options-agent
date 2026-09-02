@@ -783,10 +783,21 @@ def evaluate_cycle_decision(
     context=None,
     **pipeline_kwargs,
 ) -> DecisionSummary:
-    """Prechecks (halt, capacity) then the pipeline. Always returns a summary."""
+    """Prechecks (halt, dedup, capacity) then the pipeline. Always returns a summary."""
     halt = halt_status(account)
     if halt is not None:
         return DecisionSummary(False, "precheck", "halted", halt, market_context=market_context)
+
+    # Per-symbol dedup: never stack a second structure on a ticker that already
+    # has an open position OR a working order — one fill frees a cap slot and the
+    # ranker would otherwise re-pick the same top name.
+    sym = snapshot.get("symbol") or snapshot.get("underlying")
+    if sym and sym in {op.underlying for op in account.open_positions if op.underlying}:
+        return DecisionSummary(
+            False, "precheck", "skipped",
+            f"already holds a position or working order in {sym}",
+            market_context=market_context,
+        )
 
     n_open = len(account.open_positions)
     if n_open >= MAX_CONCURRENT_POSITIONS:
@@ -1188,7 +1199,23 @@ def run_cycle(conn: AlpacaConnection, session: Session, config: Config, *,
                 market_context=ctx_str,
             ))
 
-    ordered = rank_basket(list(snapshots), snapshots, market_context)
+    # Per-symbol dedup: drop tickers the agent already has exposure to BEFORE
+    # ranking — a held name must not be re-selected when a fill frees a slot.
+    held = held_underlyings(session)
+    for symbol in sorted(set(snapshots) & held):
+        decisions.append(DecisionSummary(
+            False, "precheck", "skipped",
+            f"already holds a position or working order in {symbol}",
+            market_context=ctx_str,
+        ))
+        log.info("[%s] DECISION SUMMARY — Skipped at [precheck]: already holds a "
+                 "position or working order", symbol)
+    candidates = [s for s in snapshots if s not in held]
+
+    # Post-filter too: a held name must never reach the eval loop even if the
+    # ranker echoes it back.
+    ordered = [s for s in rank_basket(candidates, snapshots, market_context)
+               if s not in held]
     if ordered:
         log.info("cycle priority order: %s", " > ".join(ordered))
 
@@ -1254,6 +1281,13 @@ _DEAD_STATUSES = frozenset({
     "canceled", "cancelled", "expired", "rejected", "replaced",
     "done_for_day", "gone",
 })
+
+
+def held_underlyings(session: Session) -> set[str]:
+    """Basket tickers the agent already has exposure to — an open position or a
+    working (submitted) order. These are skipped by the new-trade scan."""
+    return ({c.symbol for c in session.open_condors}
+            | {p.symbol for p in session.pending_orders})
 
 
 def _tracked_from_pending(p: PendingOrder, now_iso: str) -> TrackedCondor:

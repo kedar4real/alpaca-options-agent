@@ -338,6 +338,59 @@ def test_cycle_decision_runs_pipeline_when_clear() -> None:
     assert spies.calls == ["strategy", "to_order", "risk_manager", "risk_officer", "executor"]
 
 
+# ---- D1: per-symbol dedup -------------------------------------------------- #
+def test_evaluate_cycle_decision_skips_a_symbol_already_held() -> None:
+    calls: list[str] = []
+    held = (tracked("c1").as_open_position(),)          # underlying "SPY"
+    summary = evaluate_cycle_decision(
+        {"symbol": "SPY"}, account(positions=held), config=CFG, call_log=calls,
+        plan_fn=lambda *a, **k: calls.append("strategy"),
+    )
+    assert summary.outcome == "skipped" and summary.stage == "precheck"
+    assert "SPY" in summary.reason
+    assert calls == []
+
+
+def test_evaluate_cycle_decision_evaluates_a_symbol_not_yet_held() -> None:
+    spies = PipelineSpies()
+    summary = evaluate_cycle_decision(
+        {"symbol": "QQQ"}, account(positions=(tracked("c1").as_open_position(),)),
+        config=CFG, plan_fn=spies.plan_fn, to_order_fn=spies.to_order_fn,
+        check_fn=spies.check_fn, review_fn=spies.review_fn, submit_fn=spies.submit_fn,
+    )
+    assert summary.outcome == "executed"               # SPY held, QQQ is clear
+
+
+def test_held_underlyings_covers_open_condors_and_pending_orders() -> None:
+    sess = Session(starting_equity=100_000.0,
+                   open_condors=[tracked("c1")],                     # SPY
+                   pending_orders=[_pending("p1", symbol="IWM")])
+    assert agent.held_underlyings(sess) == {"SPY", "IWM"}
+
+
+def test_run_cycle_does_not_re_enter_a_symbol_after_its_fill_frees_a_slot(tmp_path, monkeypatch) -> None:
+    cfg = Config(session_file=str(tmp_path / "s.json"), tickers=("IWM", "SPY"))
+    session = Session(starting_equity=100_000.0,
+                      pending_orders=[_pending("iwm-ord", symbol="IWM")])
+    _stub_context(monkeypatch)          # let the real rank_basket run on candidates
+    monkeypatch.setattr(agent, "get_market_snapshot",
+                        lambda symbol, creds=None: {"symbol": symbol})
+
+    class _C(_FakeConn):
+        def order_status(self, order_id):
+            return "filled"                     # the pending IWM order fills this cycle
+
+    seen: list[str] = []
+    monkeypatch.setattr(agent, "evaluate_cycle_decision",
+                        lambda snapshot, account, **kw: seen.append(snapshot["symbol"])
+                        or DecisionSummary(True, "strategy", "skipped", "x"))
+
+    agent.run_cycle(_C(), session, cfg, now_et=None)
+
+    assert "IWM" in {c.symbol for c in session.open_condors}     # promoted on fill
+    assert seen == ["SPY"]                                       # IWM not re-evaluated
+
+
 # ======================================================================= #
 # Halt status + sticky latch
 # ======================================================================= #

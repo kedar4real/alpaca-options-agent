@@ -810,6 +810,90 @@ def test_run_cycle_accumulates_the_daily_activity_funnel(tmp_path, monkeypatch) 
     assert session.daily_activity["2026-09-01"]["ticker_scans"] == 4
 
 
+# --------------------------------------------------------------------------- #
+# Step 3 — competition hard stop
+# --------------------------------------------------------------------------- #
+def test_hard_stop_reached_boundary() -> None:
+    cutoff = "2026-09-04 10:30"
+    assert agent.hard_stop_reached(datetime(2026, 9, 4, 10, 29, tzinfo=agent.ET), cutoff) is False
+    assert agent.hard_stop_reached(datetime(2026, 9, 4, 10, 30, tzinfo=agent.ET), cutoff) is True
+    assert agent.hard_stop_reached(datetime(2026, 9, 4, 11, 0, tzinfo=agent.ET), cutoff) is True
+    assert agent.hard_stop_reached(datetime(2026, 9, 3, 23, 59, tzinfo=agent.ET), cutoff) is False
+
+
+def test_hard_stop_reached_fails_open_on_bad_config() -> None:
+    now = datetime(2026, 9, 4, 12, 0, tzinfo=agent.ET)
+    assert agent.hard_stop_reached(now, "") is False
+    assert agent.hard_stop_reached(now, "not a date") is False
+    assert agent.hard_stop_reached(now, None) is False
+
+
+class _HardStopConn(_FakeConn):
+    def __init__(self, positions=None):
+        self._positions = list(positions or [])
+        self.flatten_calls = 0
+
+    def get_positions(self):
+        return list(self._positions)
+
+    def flatten_all(self):
+        self.flatten_calls += 1
+        n = len(self._positions)
+        self._positions = []
+        return n, 0
+
+
+def _no_context(monkeypatch):
+    def boom(*a, **k):
+        raise AssertionError("context pulled after hard stop")
+    monkeypatch.setattr(agent, "_gather_market_context", boom)
+
+
+def test_run_cycle_hard_stop_flattens_and_refuses_new_trades(tmp_path, monkeypatch) -> None:
+    cfg = Config(session_file=str(tmp_path / "s.json"), tickers=("SPY", "QQQ"),
+                 hard_stop_et="2026-09-04 10:30")
+    session = Session(starting_equity=100_000.0, open_condors=[tracked("c1")])
+    conn = _HardStopConn(positions=[SimpleNamespace(symbol="SPY_P"),
+                                    SimpleNamespace(symbol="SPY_Q")])
+    calls: list[str] = []
+    monkeypatch.setattr(agent, "build_strategy_plan", lambda *a, **k: calls.append("strategy"))
+    _no_context(monkeypatch)
+
+    report = agent.run_cycle(conn, session, cfg,
+                             now_et=datetime(2026, 9, 4, 10, 31, tzinfo=agent.ET))
+
+    assert conn.flatten_calls == 1
+    assert session.open_condors == []
+    assert session.hard_stop_done is True
+    assert report.decisions == [] and report.opened == []
+    assert calls == []                          # strategy pipeline never ran
+
+
+def test_run_cycle_hard_stop_second_pass_confirms_flat_without_reflatten(tmp_path, monkeypatch) -> None:
+    cfg = Config(session_file=str(tmp_path / "s.json"), hard_stop_et="2026-09-04 10:30")
+    session = Session(starting_equity=100_000.0, hard_stop_done=True)
+    conn = _HardStopConn(positions=[])
+    _no_context(monkeypatch)
+    report = agent.run_cycle(conn, session, cfg,
+                             now_et=datetime(2026, 9, 4, 15, 0, tzinfo=agent.ET))
+    assert conn.flatten_calls == 0             # already flat -> no re-flatten
+    assert report.decisions == []
+
+
+def test_run_cycle_before_hard_stop_runs_the_normal_pipeline(tmp_path, monkeypatch) -> None:
+    cfg = Config(session_file=str(tmp_path / "s.json"), tickers=("SPY",),
+                 hard_stop_et="2026-09-04 10:30")
+    session = Session(starting_equity=100_000.0)
+    _stub_context(monkeypatch, priority=("SPY",))
+    monkeypatch.setattr(agent, "get_market_snapshot", lambda symbol, creds=None: {"symbol": symbol})
+    ran: list[str] = []
+    monkeypatch.setattr(agent, "evaluate_cycle_decision",
+                        lambda *a, **k: ran.append("x") or DecisionSummary(True, "strategy", "skipped", "x"))
+    agent.run_cycle(_FakeConn(), session, cfg,
+                    now_et=datetime(2026, 9, 4, 9, 0, tzinfo=agent.ET))
+    assert ran == ["x"] and session.hard_stop_done is False
+
+
 def test_session_round_trips_offhours_markers(tmp_path) -> None:
     sess = Session(starting_equity=100_000.0)
     sess.last_heartbeat_at = "2026-09-01T10:00:00-04:00"

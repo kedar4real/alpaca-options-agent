@@ -129,6 +129,7 @@ class Config:
     gap_alert_pct: float = 0.5                  # pre-market gap over this -> PRE-MARKET ALERT
     debate_enabled: bool = True                 # run the Bull/Bear/Judge debate on the top pick
     self_correction: bool = True                # post_trade_analysis -> lessons_learned.json
+    hard_stop_et: str = "2026-09-04 10:30"      # competition hard stop (ET wall clock)
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -152,6 +153,7 @@ class Config:
             not in ("0", "false", "no", "off"),
             self_correction=os.environ.get("AGENT_SELF_CORRECTION", "true").strip().lower()
             not in ("0", "false", "no", "off"),
+            hard_stop_et=os.environ.get("AGENT_HARD_STOP_ET", "2026-09-04 10:30"),
         )
 
 
@@ -293,6 +295,7 @@ class Session:
     last_morning_brief_date: str = ""                  # ET date of the last Morning Brief
     last_post_mortem_date: str = ""                    # ET date of the last Post-Mortem
     daily_activity: dict = field(default_factory=dict)  # "YYYY-MM-DD" -> DailyActivity dict
+    hard_stop_done: bool = False                       # competition hard stop: book flattened + logged
 
     # -- persistence ----------------------------------------------------- #
     def to_dict(self) -> dict:
@@ -308,6 +311,7 @@ class Session:
             "last_morning_brief_date": self.last_morning_brief_date,
             "last_post_mortem_date": self.last_post_mortem_date,
             "daily_activity": self.daily_activity,
+            "hard_stop_done": self.hard_stop_done,
         }
 
     @classmethod
@@ -324,6 +328,7 @@ class Session:
             last_morning_brief_date=d.get("last_morning_brief_date", ""),
             last_post_mortem_date=d.get("last_post_mortem_date", ""),
             daily_activity=dict(d.get("daily_activity", {})),
+            hard_stop_done=bool(d.get("hard_stop_done", False)),
         )
 
     def events_on(self, iso_date: str, kind: str) -> list[dict]:
@@ -814,6 +819,34 @@ class AlpacaConnection:
                 continue
             self.trading.close_position(leg.symbol)
 
+    def flatten_all(self) -> tuple[int, int]:
+        """Market-close every open position and cancel every working order.
+        Returns ``(legs_closed, legs_remaining)`` after a short settle."""
+        import time as _t
+
+        try:
+            self.trading.cancel_orders()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("flatten: cancel_orders failed: %s", exc)
+
+        before = self.get_positions()
+        try:
+            self.trading.close_all_positions(cancel_orders=True)
+        except Exception as exc:  # noqa: BLE001
+            log.error("flatten: close_all_positions failed: %s", exc)
+            for p in before:
+                try:
+                    self.trading.close_position(p.symbol)
+                except Exception as exc2:  # noqa: BLE001
+                    log.error("flatten: close_position %s failed: %s", p.symbol, exc2)
+
+        for _ in range(6):
+            _t.sleep(2)
+            if not self.get_positions():
+                break
+        remaining = len(self.get_positions())
+        return len(before) - remaining, remaining
+
     def value_condors(self, condors: list[TrackedCondor]) -> list[CondorValuation]:
         """Re-price each open position from its own ticker's near-dated chain."""
         from .alpaca_trader import build_contracts, fetch_option_chain
@@ -889,11 +922,73 @@ def _gather_market_context(conn: AlpacaConnection, config: Config,
         return context_gatherer.MarketContext.unavailable(str(exc))
 
 
+def hard_stop_reached(now_et: datetime, hard_stop_et: str) -> bool:
+    """True once ``now_et`` (an ET-aware datetime) is at or past the configured
+    ``"YYYY-MM-DD HH:MM"`` ET wall-clock cutoff. Empty / unparseable config ->
+    never stop (fail-open so a bad string can't strand the loop)."""
+    s = (hard_stop_et or "").strip()
+    if not s:
+        return False
+    try:
+        target = datetime.strptime(s, "%Y-%m-%d %H:%M").replace(tzinfo=ET)
+    except ValueError:
+        log.warning("AGENT_HARD_STOP_ET %r not 'YYYY-MM-DD HH:MM' — hard stop disabled", s)
+        return False
+    return now_et >= target
+
+
+def _hard_stop_cycle(conn: AlpacaConnection, session: Session, config: Config,
+                     now_et: datetime) -> CycleReport:
+    """Competition hard stop: on first entry flatten the book and log a final
+    summary; thereafter just confirm the book stays flat. No new trades, ever."""
+    if not session.hard_stop_done:
+        log.warning("=" * 60)
+        log.warning("COMPETITION HARD STOP reached (%s ET) — flattening the book, "
+                    "no further trades this session", config.hard_stop_et)
+        closed, remaining = conn.flatten_all()
+        session.open_condors = []
+        try:
+            equity = float(conn.get_account().equity)
+        except Exception:  # noqa: BLE001
+            equity = float("nan")
+        pnl = equity - session.starting_equity
+        offhours_log.info(
+            "HARD STOP FINAL SUMMARY\n%s\n"
+            "  cutoff            %s ET\n"
+            "  legs closed       %d  (remaining: %d)\n"
+            "  ending equity     $%s\n"
+            "  net vs start      $%s  (start $%s)\n"
+            "  new trades        REFUSED for the rest of the run\n%s",
+            "=" * 60, config.hard_stop_et, closed, remaining,
+            f"{equity:,.2f}", f"{pnl:+,.2f}", f"{session.starting_equity:,.2f}",
+            "=" * 60,
+        )
+        if remaining:
+            log.error("HARD STOP: %d position leg(s) did NOT close — retrying next cycle", remaining)
+        else:
+            session.hard_stop_done = True
+        save_session(session, config.session_file)
+        return CycleReport(decisions=[], closed=[], opened=[])
+
+    # already flattened — keep running only to confirm the book is flat
+    remaining = len(conn.get_positions())
+    if remaining:
+        log.error("HARD STOP ACTIVE — book NOT flat (%d leg(s)); re-flattening", remaining)
+        conn.flatten_all()
+    else:
+        log.info("HARD STOP ACTIVE — book flat, no new trades")
+    return CycleReport(decisions=[], closed=[], opened=[])
+
+
 def run_cycle(conn: AlpacaConnection, session: Session, config: Config, *,
               now_et: datetime | None = None) -> CycleReport:
     now_et = now_et or datetime.now(ET)
     today = now_et.date()
     now_iso = now_et.isoformat()
+
+    # Competition hard stop: past the cutoff, flatten + confirm flat, never trade.
+    if hard_stop_reached(now_et, config.hard_stop_et):
+        return _hard_stop_cycle(conn, session, config, now_et)
 
     acct = conn.get_account()
     current_equity = float(acct.equity)

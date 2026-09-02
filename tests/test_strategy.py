@@ -317,6 +317,67 @@ def test_plan_long_strangle_builds_two_long_legs() -> None:
     assert plan.suggested_contracts * plan.max_loss_per_contract <= s.MAX_RISK_PER_TRADE
 
 
+def _multi_expiry_strangle_chain(expiries=(date(2026, 9, 3), date(2026, 9, 4), date(2026, 9, 8))):
+    """A strangle-ready chain (~0.25-delta OTM put + call) listed at several expiries."""
+    out = []
+    for exp in expiries:
+        out += [mk("put", 765, 0.25, 3.40, 3.50, expiry=exp),
+                mk("call", 775, 0.25, 3.40, 3.50, expiry=exp)]
+    return out
+
+
+def test_pick_expiry_without_a_floor_takes_the_earliest_in_the_dte_band() -> None:
+    # TODAY = 2026-09-04 -> band is 09-08 .. 09-10
+    assert s.pick_expiry(_multi_expiry_strangle_chain(), today=TODAY) == date(2026, 9, 8)
+
+
+def test_pick_expiry_floor_skips_expiries_before_the_catalyst() -> None:
+    chain = _multi_expiry_strangle_chain((date(2026, 9, 3), date(2026, 9, 4)))
+    day = date(2026, 9, 2)                                   # band covers 09-03 / 09-04
+    assert s.pick_expiry(chain, today=day) == date(2026, 9, 3)                       # no floor
+    assert s.pick_expiry(chain, today=day, not_before=date(2026, 9, 4)) == date(2026, 9, 4)
+
+
+def test_pick_expiry_floor_widens_past_the_dte_band_when_needed() -> None:
+    chain = _multi_expiry_strangle_chain((date(2026, 9, 3), date(2026, 9, 22)))
+    assert s.pick_expiry(chain, today=date(2026, 9, 2),
+                         not_before=date(2026, 9, 4)) == date(2026, 9, 22)
+
+
+def test_pick_expiry_floor_returns_none_when_nothing_clears_it() -> None:
+    chain = _multi_expiry_strangle_chain((date(2026, 9, 3),))
+    assert s.pick_expiry(chain, today=date(2026, 9, 2),
+                         not_before=date(2026, 9, 4)) is None
+
+
+def test_plan_long_strangle_floors_its_expiry_at_not_before() -> None:
+    plan = s.plan_long_strangle(
+        _multi_expiry_strangle_chain(), underlying_price=770.0, iv_regime=BLOCKED,
+        today=date(2026, 9, 2), not_before=date(2026, 9, 4),
+    )
+    assert plan.eligible is True
+    assert plan.expiry == date(2026, 9, 4)          # 09-03 skipped: it's before the catalyst
+
+
+def test_build_strategy_plan_floors_long_vol_expiry_at_the_macro_catalyst() -> None:
+    snap = _snap(atm_iv=0.10, spread=-0.06, iv_eligible=False, closes=CHOP)
+    snap["chain"] = {c.symbol: None for c in _multi_expiry_strangle_chain()}
+
+    import trading_agent.strategy as strat
+    orig = strat.build_contracts
+    strat.build_contracts = lambda _chain: _multi_expiry_strangle_chain()
+    try:
+        plan = s.build_strategy_plan(
+            snap, today=date(2026, 9, 2),
+            context=_ctx(danger=True, event_date=date(2026, 9, 4)),
+        )
+    finally:
+        strat.build_contracts = orig
+
+    assert plan.structure == "long_strangle"
+    assert plan.expiry is not None and plan.expiry >= date(2026, 9, 4)
+
+
 def test_plan_long_strangle_blocks_when_debit_exceeds_cap() -> None:
     pricey = [
         mk("put", 760, 0.25, 11.0, 11.2),
@@ -448,10 +509,11 @@ def test_rank_basket_orders_by_spread_then_news() -> None:
 # =========================================================================== #
 # Quant enhancement 3 — MACRO_DANGER / PANIC_REGIME force long volatility
 # =========================================================================== #
-def _ctx(*, danger=False, panic=False):
+def _ctx(*, danger=False, panic=False, event_date=None):
     flags = (["MACRO_DANGER"] if danger else []) + (["PANIC_REGIME"] if panic else [])
     return SimpleNamespace(macro_danger=danger, panic_regime=panic,
-                           regime_flags=lambda: flags)
+                           regime_flags=lambda: flags,
+                           next_macro_event_date=lambda: event_date)
 
 
 def test_panic_regime_overrides_iron_condor_to_long_strangle() -> None:

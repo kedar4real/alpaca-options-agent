@@ -378,6 +378,13 @@ class MarketContext:
             flags.append("PANIC_REGIME")
         return flags
 
+    def next_macro_event_date(self) -> date | None:
+        """Earliest upcoming High-Impact macro event date, or ``None``. A long-vol
+        position opened under MACRO_DANGER must not expire before this — a strangle
+        that dies before the catalyst it was bought for is a guaranteed loss."""
+        dates = sorted(e.date for e in self.macro_events)
+        return dates[0] if dates else None
+
     @classmethod
     def unavailable(cls, reason: str = "context fetch failed") -> "MarketContext":
         return cls(

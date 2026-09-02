@@ -382,12 +382,25 @@ def pick_expiry(
     dte_min: int = DTE_MIN_TRADING_DAYS,
     dte_max: int = DTE_MAX_TRADING_DAYS,
     today: date | None = None,
+    not_before: date | None = None,
 ) -> date | None:
-    """Earliest expiry present in ``contracts`` within the DTE trading-day band."""
+    """Earliest expiry present in ``contracts`` within the DTE trading-day band.
+
+    ``not_before`` (a macro-catalyst floor): never return an expiry earlier than
+    this. Expiries inside the DTE band that clear the floor win; if none do, widen
+    past the band and take the earliest listed expiry on/after the floor — a
+    slightly-too-far expiry that survives the catalyst beats a guaranteed
+    pre-catalyst loss.
+    """
     lo = nth_trading_day(dte_min, today)
     hi = nth_trading_day(dte_max, today)
-    listed = sorted({c.expiry for c in contracts if lo <= c.expiry <= hi})
-    return listed[0] if listed else None
+    in_band = sorted({c.expiry for c in contracts if lo <= c.expiry <= hi})
+    if not_before is not None:
+        in_band = [e for e in in_band if e >= not_before]
+        if not in_band:
+            beyond = sorted({c.expiry for c in contracts if c.expiry >= not_before})
+            return beyond[0] if beyond else None
+    return in_band[0] if in_band else None
 
 
 def select_leg_near_delta(
@@ -638,9 +651,14 @@ def plan_long_strangle(
     iv_regime,
     iv_rv_spread: float | None = None,
     today: date | None = None,
+    not_before: date | None = None,
 ) -> IronCondorPlan:
     """Buy a ~0.25-delta OTM put and a ~0.25-delta OTM call. Max loss = net debit
-    paid; sized so that stays within ``MAX_RISK_PER_TRADE`` (1.5%)."""
+    paid; sized so that stays within ``MAX_RISK_PER_TRADE`` (1.5%).
+
+    ``not_before`` floors the expiry at a macro catalyst date (see
+    :func:`pick_expiry`) — a strangle bought for an event must outlive it.
+    """
     mode = getattr(iv_regime, "mode", None)
 
     def result(eligible: bool, reason: str, **kw) -> IronCondorPlan:
@@ -650,9 +668,10 @@ def plan_long_strangle(
             structure=REGIME_LONG_STRANGLE, **kw,
         )
 
-    expiry = pick_expiry(contracts, today=today)
+    expiry = pick_expiry(contracts, today=today, not_before=not_before)
     if expiry is None:
-        return result(False, "no listed expiry in the 1-3 trading-day window")
+        floor_note = f" on/after the {not_before} macro catalyst" if not_before else ""
+        return result(False, f"no listed expiry in the 1-3 trading-day window{floor_note}")
 
     at_expiry = [c for c in contracts if c.expiry == expiry]
     long_put = select_leg_near_delta(
@@ -813,13 +832,21 @@ def build_strategy_plan(
         )
     else:
         contracts = [c for c in build_contracts(snap["chain"]) if c.abs_delta is not None]
-        plan = _PLAN_FOR_REGIME[decision.regime](
-            contracts,
+        plan_kwargs = dict(
             underlying_price=snap.get("current_price"),
             iv_regime=snap["iv_regime"],
             iv_rv_spread=snap.get("iv_rv_spread"),
             today=today,
         )
+        # Long-vol under a macro flag: floor the expiry at the catalyst date so
+        # the strangle can't die before the event it is being bought for.
+        if decision.regime == REGIME_LONG_STRANGLE:
+            floor = getattr(context, "next_macro_event_date", lambda: None)()
+            if floor is not None:
+                plan_kwargs["not_before"] = floor
+                log.info("STRATEGY [%s]: long-vol expiry floored at %s (macro catalyst)",
+                         symbol, floor)
+        plan = _PLAN_FOR_REGIME[decision.regime](contracts, **plan_kwargs)
 
     plan.regime = decision.label
     plan.regime_reason = decision.reason

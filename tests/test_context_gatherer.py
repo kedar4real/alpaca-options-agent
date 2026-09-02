@@ -224,6 +224,19 @@ def test_synthesis_reports_no_events_cleanly() -> None:
     assert "macro: none" in s.lower()
 
 
+def test_next_macro_event_date_returns_the_earliest_upcoming_event() -> None:
+    ctx = _ctx(macro_events=(
+        MacroEvent(date(2026, 9, 16), "FOMC rate decision"),
+        MacroEvent(date(2026, 9, 4), "Employment Situation (NFP)"),
+        MacroEvent(date(2026, 9, 11), "CPI release"),
+    ))
+    assert ctx.next_macro_event_date() == date(2026, 9, 4)
+
+
+def test_next_macro_event_date_is_none_without_events() -> None:
+    assert _ctx(macro_events=()).next_macro_event_date() is None
+
+
 def test_unavailable_context_synthesises_to_no_context_available() -> None:
     mc = MarketContext.unavailable("everything is down")
     assert mc.ok is False

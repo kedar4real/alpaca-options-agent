@@ -1,5 +1,33 @@
 # Dev Log
 
+## 2026-09-02 — Competition-window configuration (two sessions remaining)
+
+Recalibrated for the final competition window. **The defined-risk invariant, the
+5% total drawdown floor, and `MAX_RISK_PER_TRADE_PCT` as the single source of
+truth are unchanged.** The static IV floor was an uncalibrated bootstrap
+placeholder — the IV−RV spread is the governing edge gate and was already
+passing, so the floor is dropped to a nominal 8%.
+
+| Parameter | Old | New | File |
+|---|---|---|---|
+| Static IV floor (Hackathon Mode) | 0.12 | **0.08** | `data.py STATIC_IV_THRESHOLD` |
+| Min credit ÷ width | 0.20 | 0.20 (unchanged) | `strategy.py MIN_CREDIT_TO_WIDTH` |
+| Short-leg delta band / target | 0.20–0.25 / 0.225 | **0.25–0.30 / 0.275** | `strategy.py SHORT_DELTA_*` |
+| IV-relative delta scaling | 0.15 / 0.25 | **clamped to 0.25 / 0.30** band | `strategy.py DYN_DELTA_*_IV` |
+| Long-leg delta / OTM offset | 0.10 / $5 | unchanged | `strategy.py LONG_*` |
+| Profit target | 0.50 | **0.35** of credit | `main.py` Config + `.env` |
+| Stop loss | 2× credit | unchanged | `main.py` Config |
+| Max concurrent positions | 3 | **4** (combined across symbols) | `risk_manager.py MAX_CONCURRENT_POSITIONS` |
+| Max risk per trade | 0.015 | **0.02** of equity | `risk_manager.py MAX_RISK_PER_TRADE_PCT` |
+| Daily loss halt | 0.025 | **0.035** of starting equity | `risk_manager.py DAILY_LOSS_HALT_PCT` |
+| Efficiency-ratio gate | 0.30 | **0.45** | `strategy.py RANGE_BOUND_ER` |
+| IV−RV spread minimum | 0.02 | **0.015** | `strategy.py MIN_IV_RV_SPREAD` |
+| Loop interval | 900s | **300s** | `main.py` Config + `.env` `AGENT_LOOP_INTERVAL_SECONDS` |
+
+Account switched to **PA3FCNG4S7EO** ($100k competition account); `session.json`
+deleted so `starting_equity` reads live from the Alpaca API on startup. 22 test
+assertions/fixtures updated to the new thresholds. 333 tests green.
+
 ## 2026-09-02 — Officer model swap + 3 alpha filters (5 commits)
 
 The **1.5% per-trade cap is byte-unchanged**; modular flow intact. 306 → **331 tests**.

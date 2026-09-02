@@ -113,13 +113,13 @@ def _env_int(name: str, default: int) -> int:
 
 @dataclass(frozen=True)
 class Config:
-    loop_interval_s: int = 900
+    loop_interval_s: int = 300                  # competition window: 5-min cadence
     log_level: str = "INFO"
     env_file: str | None = None
     session_file: str = "session.json"
     log_file: str = "logs/agent.log"
     review_timeout_s: float = 45.0
-    profit_target_fraction: float = 0.50
+    profit_target_fraction: float = 0.35        # competition window: take credit at 35%
     stop_loss_multiple: float = 2.0
     debit_stop_fraction: float = 0.50           # close a debit trade down this much of the premium
     tickers: tuple[str, ...] = DEFAULT_TICKERS  # basket evaluated each cycle
@@ -135,13 +135,13 @@ class Config:
         raw = os.environ.get("AGENT_TICKERS", "")
         tickers = tuple(t.strip().upper() for t in raw.split(",") if t.strip()) or DEFAULT_TICKERS
         return cls(
-            loop_interval_s=_env_int("AGENT_LOOP_INTERVAL_SECONDS", 900),
+            loop_interval_s=_env_int("AGENT_LOOP_INTERVAL_SECONDS", 300),
             log_level=os.environ.get("AGENT_LOG_LEVEL", "INFO").upper(),
             env_file=os.environ.get("AGENT_ENV_FILE") or None,
             session_file=os.environ.get("AGENT_SESSION_FILE", "session.json"),
             log_file=os.environ.get("AGENT_LOG_FILE", "logs/agent.log"),
             review_timeout_s=_env_float("AGENT_REVIEW_TIMEOUT_SECONDS", 45.0),
-            profit_target_fraction=_env_float("AGENT_PROFIT_TARGET_FRACTION", 0.50),
+            profit_target_fraction=_env_float("AGENT_PROFIT_TARGET_FRACTION", 0.35),
             stop_loss_multiple=_env_float("AGENT_STOP_LOSS_MULTIPLE", 2.0),
             debit_stop_fraction=_env_float("AGENT_DEBIT_STOP_FRACTION", 0.50),
             tickers=tickers,
@@ -466,7 +466,7 @@ def decide_exit(
     valuation: CondorValuation,
     *,
     is_expiring: bool,
-    profit_target_fraction: float = 0.50,
+    profit_target_fraction: float = 0.35,
     stop_loss_multiple: float = 2.0,
     debit_stop_fraction: float = 0.50,
 ) -> str | None:

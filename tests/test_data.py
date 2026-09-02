@@ -43,7 +43,7 @@ def test_regime_hackathon_eligible_above_static_threshold() -> None:
 
 
 def test_regime_hackathon_blocked_below_static_threshold() -> None:
-    r = d.evaluate_iv_regime(0.12, [0.1] * 5)
+    r = d.evaluate_iv_regime(0.05, [0.1] * 5)   # 5% < 8% static floor
     assert r.mode == "hackathon_static"
     assert r.trade_eligible is False
 

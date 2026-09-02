@@ -29,10 +29,10 @@ from .alpaca_trader import trading_sessions
 # --------------------------------------------------------------------------- #
 # Limits
 # --------------------------------------------------------------------------- #
-MAX_RISK_PER_TRADE_PCT = 0.015     # 1.5% of current equity — the absolute cap
-DAILY_LOSS_HALT_PCT = 0.025        # 2.5% of starting equity
+MAX_RISK_PER_TRADE_PCT = 0.02      # 2.0% of current equity — the absolute cap
+DAILY_LOSS_HALT_PCT = 0.035        # 3.5% of starting equity
 TOTAL_DRAWDOWN_FLOOR_PCT = 0.05    # 5% of starting equity
-MAX_CONCURRENT_POSITIONS = 3
+MAX_CONCURRENT_POSITIONS = 4
 EXPIRY_CLOSE_TRADING_DAYS = 1      # flag when this close to expiry
 CONTRACT_MULTIPLIER = 100
 

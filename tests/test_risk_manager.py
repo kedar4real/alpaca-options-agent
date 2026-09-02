@@ -60,18 +60,18 @@ def pos(expiry: date = date(2027, 1, 15), symbol: str = "SPY_CONDOR") -> rm.Open
 
 
 # --------------------------------------------------------------------------- #
-# Gate 1 — max risk per trade (1.5% of current equity)
+# Gate 1 — max risk per trade (2.0% of current equity)
 # --------------------------------------------------------------------------- #
 def test_max_risk_per_trade_exactly_at_threshold_is_allowed() -> None:
-    # 5 contracts * $300 = $1,500 == 1.5% of $100,000
-    d = rm.check_order(order(qty=5), account(100_000))
-    assert d.order_risk == 1_500.0 and d.max_risk_allowed == 1_500.0
+    # 5 contracts * $400 = $2,000 == 2.0% of $100,000
+    d = rm.check_order(order(wing=6.0, credit=2.0, qty=5), account(100_000))
+    assert d.order_risk == 2_000.0 and d.max_risk_allowed == 2_000.0
     assert d.checks["max_risk_per_trade"] is True
     assert d.approved is True
 
 
 def test_max_risk_per_trade_one_contract_over_is_blocked() -> None:
-    d = rm.check_order(order(qty=6), account(100_000))  # $1,800 > $1,500
+    d = rm.check_order(order(qty=7), account(100_000))  # 7 * $300 = $2,100 > $2,000
     assert d.checks["max_risk_per_trade"] is False
     assert d.approved is False
     assert any("trade risk" in b for b in d.blocks)
@@ -79,7 +79,7 @@ def test_max_risk_per_trade_one_contract_over_is_blocked() -> None:
 
 def test_max_risk_per_trade_scales_with_current_equity() -> None:
     # cap tracks *current* equity, not starting
-    d = rm.check_order(order(qty=5), account(90_000))  # cap now $1,350 < $1,500
+    d = rm.check_order(order(qty=7), account(90_000))  # $2,100 > 2% of $90k = $1,800
     assert d.checks["max_risk_per_trade"] is False
 
 
@@ -97,53 +97,54 @@ def test_macro_risk_multiplier_is_half_on_a_high_impact_day() -> None:
 
 
 def test_default_account_risk_multiplier_is_one_and_unchanged_behaviour() -> None:
-    # a trade at exactly 1.5% still passes when no macro reduction is applied
-    d = rm.check_order(order(qty=5), account(100_000))
-    assert d.max_risk_allowed == 1_500.0 and d.approved is True
+    # a trade at exactly 2.0% still passes when no macro reduction is applied
+    d = rm.check_order(order(wing=6.0, credit=2.0, qty=5), account(100_000))
+    assert d.max_risk_allowed == 2_000.0 and d.approved is True
 
 
 def test_macro_day_halves_the_effective_cap_without_touching_the_constant() -> None:
     before = rm.MAX_RISK_PER_TRADE_PCT
-    # 3 contracts * $300 = $900 : fine normally, blocked when the cap is halved to $750
-    ok = rm.check_order(order(qty=3), account(100_000))
+    # 5 contracts * $300 = $1,500 : fine normally, blocked when the cap is halved to $1,000
+    ok = rm.check_order(order(qty=5), account(100_000))
     assert ok.checks["max_risk_per_trade"] is True
 
-    macro = rm.check_order(order(qty=3), account(100_000, risk_mult=0.5))
-    assert macro.max_risk_allowed == 750.0
+    macro = rm.check_order(order(qty=5), account(100_000, risk_mult=0.5))
+    assert macro.max_risk_allowed == 1_000.0
     assert macro.checks["max_risk_per_trade"] is False
     assert any("trade risk" in b for b in macro.blocks)
-    assert rm.MAX_RISK_PER_TRADE_PCT == before == 0.015     # constant is the source of truth
+    assert rm.MAX_RISK_PER_TRADE_PCT == before == 0.02      # constant is the source of truth
 
 
 def test_macro_reduction_never_loosens_a_limit() -> None:
     # a multiplier > 1 is not something the agent sets, but the gate must still
-    # never allow more than the 1.5% line even if handed one
-    d = rm.check_order(order(qty=6), account(100_000, risk_mult=2.0))
-    # $1,800 risk vs a (wrongly) doubled $3,000 cap -> we clamp the multiplier at 1.0
-    assert d.max_risk_allowed == 1_500.0
+    # never allow more than the 2.0% line even if handed one
+    d = rm.check_order(order(qty=7), account(100_000, risk_mult=2.0))
+    # $2,100 risk vs a (wrongly) doubled $4,000 cap -> we clamp the multiplier at 1.0
+    assert d.max_risk_allowed == 2_000.0
     assert d.checks["max_risk_per_trade"] is False
 
 
 # --------------------------------------------------------------------------- #
-# Gate 2 — daily loss halt (2.5% of starting equity)
+# Gate 2 — daily loss halt (3.5% of starting equity)
 # --------------------------------------------------------------------------- #
-def test_daily_loss_exactly_at_threshold_halts() -> None:
-    d = rm.check_order(order(), account(97_500, day_start=100_000))  # -$2,500
-    assert d.daily_loss == 2_500.0 and d.daily_loss_limit == 2_500.0
+def test_daily_loss_at_or_over_threshold_halts() -> None:
+    d = rm.check_order(order(), account(96_400, day_start=100_000))  # -$3,600 (>= 3.5%)
+    assert d.daily_loss == 3_600.0
+    assert d.daily_loss_limit == pytest.approx(3_500.0)
     assert d.checks["daily_loss_halt"] is False
     assert d.approved is False
     assert any("no new trades today" in b for b in d.blocks)
 
 
 def test_daily_loss_one_dollar_under_threshold_passes() -> None:
-    d = rm.check_order(order(), account(97_501, day_start=100_000))  # -$2,499
+    d = rm.check_order(order(), account(96_501, day_start=100_000))  # -$3,499
     assert d.checks["daily_loss_halt"] is True
     assert d.approved is True
 
 
 def test_daily_loss_measured_from_day_start_not_starting_equity() -> None:
-    # down $2,600 on the day but the account is *up* overall -> still halted
-    d = rm.check_order(order(), account(120_000, day_start=122_600))
+    # down $4,000 on the day but the account is *up* overall -> still halted
+    d = rm.check_order(order(), account(120_000, day_start=124_000))
     assert d.checks["daily_loss_halt"] is False
     assert d.checks["total_drawdown_floor"] is True
 
@@ -181,9 +182,16 @@ def test_two_open_positions_allows_new_trade() -> None:
     assert d.approved is True
 
 
-def test_three_open_positions_blocks_the_fourth() -> None:
+def test_three_open_positions_still_allows_a_fourth() -> None:
     d = rm.check_order(order(), account(100_000, positions=(pos(), pos(), pos())))
     assert d.open_position_count == 3
+    assert d.checks["max_concurrent_positions"] is True
+    assert d.approved is True
+
+
+def test_four_open_positions_blocks_the_fifth() -> None:
+    d = rm.check_order(order(), account(100_000, positions=(pos(), pos(), pos(), pos())))
+    assert d.open_position_count == 4
     assert d.checks["max_concurrent_positions"] is False
     assert d.approved is False
 
@@ -337,10 +345,10 @@ def test_every_gate_can_fail_at_once() -> None:
     acct = account(
         50_000,                       # -50% total  -> drawdown floor breached
         starting=100_000,
-        day_start=53_000,             # -$3,000 today -> daily loss halt
-        positions=(pos(), pos(), pos()),  # 3 open -> max positions
+        day_start=54_000,             # -$4,000 today -> daily loss halt (>= $3,500)
+        positions=(pos(), pos(), pos(), pos()),  # 4 open -> max positions
     )
-    d = rm.check_order(order(qty=10), acct)  # $3,000 risk vs $750 cap
+    d = rm.check_order(order(qty=10), acct)  # $3,000 risk vs $1,000 (2% of $50k) cap
     assert d.approved is False
     assert d.checks["max_risk_per_trade"] is False
     assert d.checks["daily_loss_halt"] is False
@@ -381,10 +389,10 @@ def test_gate_1_uses_max_loss_for_a_long_strangle() -> None:
     assert d.order_risk == pytest.approx(630.0)
 
     too_big = rm.ProposedOrder(
-        0.0, -6.00, 3,
+        0.0, -8.00, 3,
         (OrderLeg("buy", "put", 3), OrderLeg("buy", "call", 3)),
-        max_loss=600.0,
-    )                                             # risk 1800 > 1500 cap
+        max_loss=800.0,
+    )                                             # risk 2400 > 2000 (2%) cap
     d2 = rm.check_order(too_big, account(100_000))
     assert d2.approved is False
     assert d2.checks["max_risk_per_trade"] is False

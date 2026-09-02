@@ -39,16 +39,16 @@ log = logging.getLogger("strategy")
 DTE_MIN_TRADING_DAYS = 1
 DTE_MAX_TRADING_DAYS = 3
 
-SHORT_DELTA_TARGET = 0.225
-SHORT_DELTA_MIN = 0.20
-SHORT_DELTA_MAX = 0.25
+SHORT_DELTA_TARGET = 0.275
+SHORT_DELTA_MIN = 0.25
+SHORT_DELTA_MAX = 0.30
 
 # IV-relative delta scaling: the short (premium-capture) legs move INVERSELY with
 # the vol level. When IV is high the wings move fast, so push strikes FURTHER OTM
 # (lower delta) to lift probability-of-profit; when IV is low/crushed, move CLOSER
 # to ATM (higher delta) so the credit is still worth taking.
-DYN_DELTA_LOW_IV = 0.25          # target delta when ATM IV is low  (closer to ATM, keep credit)
-DYN_DELTA_HIGH_IV = 0.15         # target delta when ATM IV is high (further OTM, raise PoP)
+DYN_DELTA_LOW_IV = 0.30          # target delta when ATM IV is low  (closer to ATM, keep credit)
+DYN_DELTA_HIGH_IV = 0.25         # target delta when ATM IV is high (further OTM) - clamped to the 0.25-0.30 competition band
 DYN_IV_LOW = 0.15               # ATM IV at/below this is "low vol"
 DYN_IV_HIGH = 0.30             # ATM IV at/above this is "high vol"
 
@@ -56,18 +56,18 @@ LONG_DELTA_TARGET = 0.10
 LONG_DELTA_TOLERANCE = 0.05   # accept 0.05-0.15 for the long leg's delta
 LONG_OTM_OFFSET = 5.0         # $ wing width when no ~0.10-delta strike is available
 
-MIN_CREDIT_TO_WIDTH = 0.20    # target net credit >= 20% of the wing width
+MIN_CREDIT_TO_WIDTH = 0.20    # net credit must be >= 20% of the wing width
 
 # IV must sit at least this far (annualized vol points) above 10-day realized vol,
 # i.e. options are pricing in more movement than the underlying has actually made.
 # None in the snapshot (not enough price history) -> the check is skipped.
-MIN_IV_RV_SPREAD = 0.02
+MIN_IV_RV_SPREAD = 0.015
 
 # --- Dynamic market-regime switch -------------------------------------------- #
 # "IV >> RV" (rich) -> Regime A ;  "IV << RV" (cheap) -> Regime B / C.
 LOW_IV_RV_SPREAD = -0.02          # IV at least this far BELOW RV counts as "IV << RV"
 EFFICIENCY_RATIO_WINDOW = 10      # trading days for the Kaufman efficiency ratio
-RANGE_BOUND_ER = 0.30            # ER < this -> range-bound ; ER >= this -> trending
+RANGE_BOUND_ER = 0.45            # ER < this -> range-bound ; ER >= this -> trending
 
 # ADX trend-strength filter (context-supplied; Wilder 14). ER can be noisy, so a
 # confirmed strong trend hard-disables the iron condor:
@@ -88,7 +88,7 @@ REGIME_NONE = "none"
 # MAX_RISK_PER_TRADE_PCT is the single source of truth (shared with risk_manager),
 # so this figure can't drift from the pre-trade gate.
 NOMINAL_EQUITY = 100_000.0
-MAX_RISK_PER_TRADE = MAX_RISK_PER_TRADE_PCT * NOMINAL_EQUITY  # $1,500
+MAX_RISK_PER_TRADE = MAX_RISK_PER_TRADE_PCT * NOMINAL_EQUITY  # $2,000 (2.0%)
 CONTRACT_MULTIPLIER = 100
 
 

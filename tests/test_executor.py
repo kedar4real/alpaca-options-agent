@@ -64,7 +64,7 @@ def _pos():
 # --------------------------------------------------------------------------- #
 def test_blocked_order_is_not_submitted() -> None:
     fake = FakeTradingClient()
-    res = ex.submit_iron_condor(order(), account(positions=(_pos(), _pos(), _pos())), client=fake)
+    res = ex.submit_iron_condor(order(), account(positions=(_pos(), _pos(), _pos(), _pos())), client=fake)
     assert res.submitted is False
     assert res.order is None and res.order_id is None
     assert res.decision.approved is False
@@ -80,12 +80,12 @@ def test_blocked_by_sticky_halt_is_not_submitted() -> None:
 
 def test_blocked_order_logs_full_reasoning(caplog) -> None:
     with caplog.at_level(logging.WARNING, logger="executor"):
-        ex.submit_iron_condor(order(), account(positions=(_pos(), _pos(), _pos())), client=FakeTradingClient())
+        ex.submit_iron_condor(order(), account(positions=(_pos(), _pos(), _pos(), _pos())), client=FakeTradingClient())
     assert "ORDER BLOCKED" in caplog.text
     # the full RiskDecision.describe() is in the log
     assert "REJECTED" in caplog.text
     assert "max_concurrent_positions" in caplog.text
-    assert "open positions >= max 3" in caplog.text
+    assert "open positions >= max 4" in caplog.text
 
 
 # --------------------------------------------------------------------------- #

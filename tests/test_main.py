@@ -107,7 +107,8 @@ def test_profit_target_fires_at_half_the_credit() -> None:
 
 
 def test_profit_target_not_fired_just_under_target() -> None:
-    assert decide_exit(valuation(0.51), is_expiring=False) is None
+    # entry credit 1.00; cost-to-close 0.70 -> captured 30% < 35% target
+    assert decide_exit(valuation(0.70), is_expiring=False) is None
 
 
 def test_stop_loss_fires_at_two_times_the_credit_lost() -> None:
@@ -317,9 +318,9 @@ def test_precheck_halt_skips_the_pipeline_entirely() -> None:
 
 def test_precheck_capacity_skips_the_pipeline_entirely() -> None:
     calls: list[str] = []
-    three = tuple(tracked(f"c{i}").as_open_position() for i in range(3))
+    full = tuple(tracked(f"c{i}").as_open_position() for i in range(4))
     summary = evaluate_cycle_decision(
-        {}, account(positions=three), config=CFG, call_log=calls,
+        {}, account(positions=full), config=CFG, call_log=calls,
         plan_fn=lambda *a, **k: calls.append("strategy"),
     )
     assert summary.outcome == "skipped" and "max positions" in summary.reason
@@ -350,7 +351,8 @@ def test_halt_status_flags_total_drawdown_floor() -> None:
 
 
 def test_halt_status_flags_daily_loss() -> None:
-    s = halt_status(account(starting=100_000.0, current=97_400.0, day_start=100_000.0))
+    # -$3,600 on the day -> over the 3.5% daily-loss halt
+    s = halt_status(account(starting=100_000.0, current=96_400.0, day_start=100_000.0))
     assert s and "daily loss" in s
 
 
@@ -484,8 +486,9 @@ def test_strangle_profit_target_at_plus_50pct_of_the_debit() -> None:
     assert decide_exit(_debit_val(-3.00), is_expiring=False) == "profit-target"
 
 
-def test_strangle_not_closed_when_only_up_40pct() -> None:
-    assert decide_exit(_debit_val(-2.80), is_expiring=False) is None
+def test_strangle_not_closed_when_only_up_30pct() -> None:
+    # debit 2.00 paid; worth 2.60 now -> +30% < 35% target
+    assert decide_exit(_debit_val(-2.60), is_expiring=False) is None
 
 
 def test_strangle_stop_loss_at_minus_50pct_of_the_debit() -> None:

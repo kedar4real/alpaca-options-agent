@@ -43,17 +43,18 @@ def mk(right, strike, abs_delta, bid, ask, expiry=EXPIRY):
 
 
 def sample_chain():
-    """A small symmetric SPY chain around ~770 with a clean 0.225/0.10 structure."""
+    """A small symmetric SPY chain around ~770 with a clean 0.275/0.10 structure
+    (short legs in the 0.25-0.30 competition band)."""
     return [
         # puts (delta magnitude grows as strike falls)
-        mk("put", 765, 0.30, 3.40, 3.50),
-        mk("put", 760, 0.225, 2.35, 2.45),   # -> short put  (mid 2.40)
+        mk("put", 765, 0.35, 3.40, 3.50),
+        mk("put", 760, 0.275, 2.35, 2.45),   # -> short put  (mid 2.40)
         mk("put", 755, 0.16, 1.35, 1.45),
         mk("put", 750, 0.10, 0.90, 1.00),    # -> long put   (mid 0.95, delta rule)
         mk("put", 745, 0.06, 0.55, 0.65),
         # calls
-        mk("call", 775, 0.30, 3.35, 3.45),
-        mk("call", 780, 0.225, 2.30, 2.40),  # -> short call (mid 2.35)
+        mk("call", 775, 0.35, 3.35, 3.45),
+        mk("call", 780, 0.275, 2.30, 2.40),  # -> short call (mid 2.35)
         mk("call", 785, 0.16, 1.30, 1.40),
         mk("call", 790, 0.10, 0.85, 0.95),   # -> long call  (mid 0.90, delta rule)
         mk("call", 795, 0.06, 0.50, 0.60),
@@ -192,14 +193,14 @@ def test_plan_position_sizing_respects_risk_cap() -> None:
     plan = s.plan_iron_condor(
         sample_chain(), underlying_price=770.0, iv_regime=ELIGIBLE, today=TODAY
     )
-    # max loss/contract = (10 - 2.90) * 100 = 710 -> floor(1500/710) = 2
+    # max loss/contract = (10 - 2.90) * 100 = 710 -> floor(2000/710) = 2
     assert plan.max_loss_per_contract == pytest.approx(710.0)
     assert plan.suggested_contracts == 2
-    # sizing stays within the shared 1.5% cap and can't fit one more
+    # sizing stays within the shared 2.0% cap and can't fit one more
     n = plan.suggested_contracts
     assert n * plan.max_loss_per_contract <= s.MAX_RISK_PER_TRADE
     assert (n + 1) * plan.max_loss_per_contract > s.MAX_RISK_PER_TRADE
-    assert s.MAX_RISK_PER_TRADE == 1_500.0
+    assert s.MAX_RISK_PER_TRADE == 2_000.0
 
 
 # =========================================================================== #
@@ -318,9 +319,9 @@ def test_plan_long_strangle_builds_two_long_legs() -> None:
 
 def test_plan_long_strangle_blocks_when_debit_exceeds_cap() -> None:
     pricey = [
-        mk("put", 760, 0.25, 9.0, 9.2),
-        mk("call", 780, 0.25, 9.0, 9.2),
-    ]
+        mk("put", 760, 0.25, 11.0, 11.2),
+        mk("call", 780, 0.25, 11.0, 11.2),
+    ]                                        # debit ~22.2/spread -> $2,220 > $2,000 cap
     plan = s.plan_long_strangle(pricey, underlying_price=770.0, iv_regime=BLOCKED, today=TODAY)
     assert plan.eligible is False
     assert "risk cap" in plan.reason and plan.suggested_contracts == 0

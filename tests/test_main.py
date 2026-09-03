@@ -1119,6 +1119,38 @@ def test_run_cycle_halt_file_manages_positions_but_skips_new_trades(tmp_path, mo
     assert report.opened == []
 
 
+def test_run_cycle_before_trade_window_manages_positions_but_skips_new_trades(
+    tmp_path, monkeypatch
+) -> None:
+    cfg = Config(session_file=str(tmp_path / "s.json"), tickers=("SPY",),
+                 halt_file=str(tmp_path / "HALT"),
+                 trade_not_before_et=datetime(2026, 9, 4, 9, 30, tzinfo=agent.ET))
+    session = Session(starting_equity=100_000.0)
+    _stub_context(monkeypatch, priority=("SPY",))
+    managed: list[str] = []
+    monkeypatch.setattr(agent, "manage_open_positions",
+                        lambda *a, **k: managed.append("m") or [])
+    evald: list[str] = []
+    monkeypatch.setattr(
+        agent, "evaluate_cycle_decision",
+        lambda snapshot, account, **kw: (
+            evald.append("x") or DecisionSummary(True, "strategy", "skipped", "no setup")
+        ),
+    )
+    monkeypatch.setattr(agent, "get_market_snapshot",
+                        lambda symbol, creds=None: {"symbol": symbol})
+
+    # 08:45 ET — before the 09:30 window
+    agent.run_cycle(_FakeConn(), session, cfg,
+                    now_et=datetime(2026, 9, 4, 8, 45, tzinfo=agent.ET))
+    assert managed == ["m"] and evald == []
+
+    # 09:45 ET — inside the window, normal evaluation resumes
+    agent.run_cycle(_FakeConn(), session, cfg,
+                    now_et=datetime(2026, 9, 4, 9, 45, tzinfo=agent.ET))
+    assert evald != []
+
+
 def test_run_cycle_without_halt_file_evaluates_normally(tmp_path, monkeypatch) -> None:
     cfg = Config(session_file=str(tmp_path / "s.json"), tickers=("SPY",),
                  halt_file=str(tmp_path / "HALT"))          # file does NOT exist

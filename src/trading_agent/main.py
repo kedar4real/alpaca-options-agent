@@ -129,6 +129,18 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _parse_et_wallclock(s: str):
+    """``"YYYY-MM-DD HH:MM"`` -> an ET-aware datetime, or None for blank/garbage."""
+    s = (s or "").strip()
+    if not s:
+        return None
+    try:
+        return datetime.strptime(s, "%Y-%m-%d %H:%M").replace(tzinfo=ET)
+    except ValueError:
+        log.warning("AGENT_TRADE_NOT_BEFORE_ET %r not 'YYYY-MM-DD HH:MM' — ignored", s)
+        return None
+
+
 def parse_universe(raw: str) -> tuple[str, ...]:
     """``"spy, qqq ,, IWM"`` -> ``("SPY", "QQQ", "IWM")``. Upper-cased, trimmed,
     de-duplicated (first occurrence wins), blanks dropped."""
@@ -163,6 +175,7 @@ class Config:
     debate_enabled: bool = True                 # run the Bull/Bear/Judge debate on the top pick
     self_correction: bool = True                # post_trade_analysis -> lessons_learned.json
     hard_stop_et: str = "2026-09-04 10:30"      # competition hard stop (ET wall clock)
+    trade_not_before_et: "datetime | None" = None  # skip new-trade eval until this ET wall clock
     halt_file: str = "HALT"                     # if this file exists: manage only, no new trades
     audit_file: str | None = None               # append debate transcripts here (final-session evidence)
     disable_macro_danger: bool = False          # final-session override: suppress the MACRO_DANGER long-vol force
@@ -204,6 +217,9 @@ class Config:
             self_correction=os.environ.get("AGENT_SELF_CORRECTION", "true").strip().lower()
             not in ("0", "false", "no", "off"),
             hard_stop_et=os.environ.get("AGENT_HARD_STOP_ET", "2026-09-04 10:30"),
+            trade_not_before_et=_parse_et_wallclock(
+                os.environ.get("AGENT_TRADE_NOT_BEFORE_ET", "")
+            ),
             halt_file=os.environ.get("AGENT_HALT_FILE", "HALT"),
             audit_file=os.environ.get("AGENT_AUDIT_FILE") or None,
             disable_macro_danger=os.environ.get("AGENT_DISABLE_MACRO_DANGER", "false")
@@ -1514,13 +1530,17 @@ def run_cycle(conn: AlpacaConnection, session: Session, config: Config, *,
                        panic_equity=config.panic_flatten_equity)
     account = _account()
 
-    # 2b. operator HALT file — keep managing open positions (done above) and
-    #     logging, but evaluate no new trades this cycle.
+    # 2b. operator HALT file, or a pre-window "not before" gate — keep managing
+    #     open positions (done above) and logging, but evaluate no new trades.
     decisions: list[DecisionSummary] = []
     submitted: list[dict] = []
-    if halt_file_present(config.halt_file):
-        log.warning("HALT file present (%s) — managing open positions only, "
-                    "no new-trade evaluation this cycle", config.halt_file)
+    pre_window = (
+        config.trade_not_before_et is not None and now_et < config.trade_not_before_et
+    )
+    if halt_file_present(config.halt_file) or pre_window:
+        why = (f"before the {config.trade_not_before_et:%Y-%m-%d %H:%M} ET trade window"
+               if pre_window else f"HALT file present ({config.halt_file})")
+        log.info("%s — managing open positions only, no new-trade evaluation this cycle", why)
         _accumulate_daily_activity(session, decisions, today=today,
                                    basket_size=len(config.tickers))
         save_session(session, config.session_file)

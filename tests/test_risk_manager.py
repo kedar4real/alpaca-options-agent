@@ -60,18 +60,18 @@ def pos(expiry: date = date(2027, 1, 15), symbol: str = "SPY_CONDOR") -> rm.Open
 
 
 # --------------------------------------------------------------------------- #
-# Gate 1 — max risk per trade (2.0% of current equity)
+# Gate 1 — max risk per trade (1.5% of current equity)
 # --------------------------------------------------------------------------- #
 def test_max_risk_per_trade_exactly_at_threshold_is_allowed() -> None:
-    # 5 contracts * $400 = $2,000 == 2.0% of $100,000
-    d = rm.check_order(order(wing=6.0, credit=2.0, qty=5), account(100_000))
-    assert d.order_risk == 2_000.0 and d.max_risk_allowed == 2_000.0
+    # 5 contracts * $300 = $1,500 == 1.5% of $100,000
+    d = rm.check_order(order(wing=5.0, credit=2.0, qty=5), account(100_000))
+    assert d.order_risk == 1_500.0 and d.max_risk_allowed == 1_500.0
     assert d.checks["max_risk_per_trade"] is True
     assert d.approved is True
 
 
 def test_max_risk_per_trade_one_contract_over_is_blocked() -> None:
-    d = rm.check_order(order(qty=7), account(100_000))  # 7 * $300 = $2,100 > $2,000
+    d = rm.check_order(order(qty=6), account(100_000))  # 6 * $300 = $1,800 > $1,500
     assert d.checks["max_risk_per_trade"] is False
     assert d.approved is False
     assert any("trade risk" in b for b in d.blocks)
@@ -79,7 +79,7 @@ def test_max_risk_per_trade_one_contract_over_is_blocked() -> None:
 
 def test_max_risk_per_trade_scales_with_current_equity() -> None:
     # cap tracks *current* equity, not starting
-    d = rm.check_order(order(qty=7), account(90_000))  # $2,100 > 2% of $90k = $1,800
+    d = rm.check_order(order(qty=6), account(90_000))  # $1,800 > 1.5% of $90k = $1,350
     assert d.checks["max_risk_per_trade"] is False
 
 
@@ -97,30 +97,30 @@ def test_macro_risk_multiplier_is_half_on_a_high_impact_day() -> None:
 
 
 def test_default_account_risk_multiplier_is_one_and_unchanged_behaviour() -> None:
-    # a trade at exactly 2.0% still passes when no macro reduction is applied
-    d = rm.check_order(order(wing=6.0, credit=2.0, qty=5), account(100_000))
-    assert d.max_risk_allowed == 2_000.0 and d.approved is True
+    # a trade at exactly 1.5% still passes when no macro reduction is applied
+    d = rm.check_order(order(wing=5.0, credit=2.0, qty=5), account(100_000))
+    assert d.max_risk_allowed == 1_500.0 and d.approved is True
 
 
 def test_macro_day_halves_the_effective_cap_without_touching_the_constant() -> None:
     before = rm.MAX_RISK_PER_TRADE_PCT
-    # 5 contracts * $300 = $1,500 : fine normally, blocked when the cap is halved to $1,000
-    ok = rm.check_order(order(qty=5), account(100_000))
+    # 4 contracts * $300 = $1,200 : fine normally, blocked when the cap is halved to $750
+    ok = rm.check_order(order(qty=4), account(100_000))
     assert ok.checks["max_risk_per_trade"] is True
 
-    macro = rm.check_order(order(qty=5), account(100_000, risk_mult=0.5))
-    assert macro.max_risk_allowed == 1_000.0
+    macro = rm.check_order(order(qty=4), account(100_000, risk_mult=0.5))
+    assert macro.max_risk_allowed == 750.0
     assert macro.checks["max_risk_per_trade"] is False
     assert any("trade risk" in b for b in macro.blocks)
-    assert rm.MAX_RISK_PER_TRADE_PCT == before == 0.02      # constant is the source of truth
+    assert rm.MAX_RISK_PER_TRADE_PCT == before == 0.015     # constant is the source of truth
 
 
 def test_macro_reduction_never_loosens_a_limit() -> None:
     # a multiplier > 1 is not something the agent sets, but the gate must still
-    # never allow more than the 2.0% line even if handed one
-    d = rm.check_order(order(qty=7), account(100_000, risk_mult=2.0))
-    # $2,100 risk vs a (wrongly) doubled $4,000 cap -> we clamp the multiplier at 1.0
-    assert d.max_risk_allowed == 2_000.0
+    # never allow more than the 1.5% line even if handed one
+    d = rm.check_order(order(qty=6), account(100_000, risk_mult=2.0))
+    # $1,800 risk vs a (wrongly) doubled $3,000 cap -> we clamp the multiplier at 1.0
+    assert d.max_risk_allowed == 1_500.0
     assert d.checks["max_risk_per_trade"] is False
 
 

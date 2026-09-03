@@ -193,14 +193,14 @@ def test_plan_position_sizing_respects_risk_cap() -> None:
     plan = s.plan_iron_condor(
         sample_chain(), underlying_price=770.0, iv_regime=ELIGIBLE, today=TODAY
     )
-    # max loss/contract = (10 - 2.90) * 100 = 710 -> floor(2000/710) = 2
+    # max loss/contract = (10 - 2.90) * 100 = 710 -> floor(1500/710) = 2
     assert plan.max_loss_per_contract == pytest.approx(710.0)
     assert plan.suggested_contracts == 2
-    # sizing stays within the shared 2.0% cap and can't fit one more
+    # sizing stays within the shared 1.5% cap and can't fit one more
     n = plan.suggested_contracts
     assert n * plan.max_loss_per_contract <= s.MAX_RISK_PER_TRADE
     assert (n + 1) * plan.max_loss_per_contract > s.MAX_RISK_PER_TRADE
-    assert s.MAX_RISK_PER_TRADE == 2_000.0
+    assert s.MAX_RISK_PER_TRADE == 1_500.0
 
 
 # =========================================================================== #

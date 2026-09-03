@@ -100,7 +100,7 @@ REGIME_NONE = "none"
 # MAX_RISK_PER_TRADE_PCT is the single source of truth (shared with risk_manager),
 # so this figure can't drift from the pre-trade gate.
 NOMINAL_EQUITY = 100_000.0
-MAX_RISK_PER_TRADE = MAX_RISK_PER_TRADE_PCT * NOMINAL_EQUITY  # $2,000 (2.0%)
+MAX_RISK_PER_TRADE = MAX_RISK_PER_TRADE_PCT * NOMINAL_EQUITY  # $1,500 (1.5%)
 CONTRACT_MULTIPLIER = 100
 
 

@@ -83,6 +83,7 @@ from .risk_manager import (
     macro_risk_multiplier,
 )
 from .strategy import (
+    HARVEST_MIN_CTW,
     HARVEST_SHORT_DELTA,
     HARVEST_SPREAD_WIDTH,
     MIN_CREDIT_TO_WIDTH,
@@ -181,6 +182,7 @@ class Config:
     disable_macro_danger: bool = False          # final-session override: suppress the MACRO_DANGER long-vol force
     harvest_mode: bool = False                  # final-session: force bull puts on bullish-sentiment names
     harvest_sentiment_min: float = 0.2          # news score above this -> harvest a bull put
+    relax_iv_gates: bool = False                # Last-Call "Open Door": drop IV-regime / IV-RV checks
     panic_flatten_equity: float | None = None   # absolute equity line: at/below -> panic flatten + halt
     mcp_enabled: bool = True                    # try the Alpaca MCP server for reads
     mcp_server_dir: str = "C:/alpaca-hackathon/alpaca-mcp-server"
@@ -227,6 +229,8 @@ class Config:
             harvest_mode=os.environ.get("AGENT_HARVEST_MODE", "false")
             .strip().lower() in ("1", "true", "yes", "on"),
             harvest_sentiment_min=_env_float("AGENT_HARVEST_SENTIMENT_MIN", 0.2),
+            relax_iv_gates=os.environ.get("AGENT_RELAX_IV_GATES", "false")
+            .strip().lower() in ("1", "true", "yes", "on"),
             panic_flatten_equity=(_env_float("AGENT_PANIC_FLATTEN_EQUITY", 0.0) or None),
             mcp_enabled=os.environ.get("AGENT_MCP", "true").strip().lower()
             not in ("0", "false", "no", "off"),
@@ -889,13 +893,15 @@ def evaluate_new_trade(
     every summary); ``context`` is the ``MarketContext`` object (its
     MACRO_DANGER / PANIC_REGIME flags steer ``build_strategy_plan``).
     """
-    _harvest_kw = (
-        {"harvest_mode": True, "harvest_sentiment_min": config.harvest_sentiment_min}
-        if config.harvest_mode else {}
-    )
+    _plan_kw = {}
+    if config.harvest_mode:
+        _plan_kw["harvest_mode"] = True
+        _plan_kw["harvest_sentiment_min"] = config.harvest_sentiment_min
+    if config.relax_iv_gates:
+        _plan_kw["relax_iv_gates"] = True
     plan_fn = plan_fn or (
         lambda snap, today=None: build_strategy_plan(
-            snap, today=today, context=context, **_harvest_kw
+            snap, today=today, context=context, **_plan_kw
         )
     )
     to_order_fn = to_order_fn or executor_mod.from_plan
@@ -2062,14 +2068,19 @@ def startup(config: Config) -> tuple[AlpacaConnection, Session]:
     mode_bits = ["atomic MLEG close (no more leg-by-leg unwinds)"]
     if config.trade_not_before_et:
         mode_bits.append(f"new trades gated until {config.trade_not_before_et:%Y-%m-%d %H:%M} ET")
+    else:
+        mode_bits.append("no start-time lock — trading enabled immediately")
     if config.disable_macro_danger:
         mode_bits.append("MACRO_DANGER override OFF")
+    if config.relax_iv_gates:
+        mode_bits.append("IV gates OFF (IV-regime + IV-RV checks dropped — 'Open Door')")
     if config.harvest_mode:
         m = config.harvest_sentiment_min
         mode_bits.append(
             f"HARVEST directional mode ON on {', '.join(config.tickers)} — news score > +{m} "
             f"forces a bull put, < -{m} a bear call, "
-            f"{HARVEST_SHORT_DELTA:.2f}-delta short / ${HARVEST_SPREAD_WIDTH:.0f}-wide"
+            f"{HARVEST_SHORT_DELTA:.2f}-delta short / ${HARVEST_SPREAD_WIDTH:.0f}-wide / "
+            f"ctw>={HARVEST_MIN_CTW:.0%} / nearest expiry incl. 0-DTE"
         )
     if config.stop_loss_max_loss_fraction:
         mode_bits.append(

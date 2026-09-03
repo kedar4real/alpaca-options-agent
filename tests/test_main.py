@@ -1474,6 +1474,13 @@ def test_config_from_env_prefers_agent_universe(monkeypatch) -> None:
     assert agent.Config.from_env().tickers == ("SPY", "GLD", "TLT")
 
 
+def test_config_reads_relax_iv_gates_from_env(monkeypatch) -> None:
+    monkeypatch.delenv("AGENT_RELAX_IV_GATES", raising=False)
+    assert agent.Config.from_env().relax_iv_gates is False
+    monkeypatch.setenv("AGENT_RELAX_IV_GATES", "true")
+    assert agent.Config.from_env().relax_iv_gates is True
+
+
 def test_config_from_env_falls_back_to_agent_tickers_then_default(monkeypatch) -> None:
     monkeypatch.delenv("AGENT_UNIVERSE", raising=False)
     monkeypatch.setenv("AGENT_TICKERS", "aaa,bbb")

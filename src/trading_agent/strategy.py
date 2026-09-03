@@ -56,7 +56,7 @@ LONG_DELTA_TARGET = 0.10
 LONG_DELTA_TOLERANCE = 0.05   # accept 0.05-0.15 for the long leg's delta
 LONG_OTM_OFFSET = 5.0         # $ wing width when no ~0.10-delta strike is available
 
-MIN_CREDIT_TO_WIDTH = 0.20    # net credit must be >= 20% of the wing width
+MIN_CREDIT_TO_WIDTH = 0.10    # net credit must be >= 10% of the wing width (Last-Call floor)
 
 # IV must sit at least this far (annualized vol points) above 10-day realized vol,
 # i.e. options are pricing in more movement than the underlying has actually made.
@@ -89,9 +89,10 @@ STRANGLE_DELTA_TARGET = 0.25      # long strangle legs: ~0.25 delta each side
 # credit-to-width floor stays at HARVEST_MIN_CTW so a weak premium is still a
 # no-trade.
 HARVEST_SENTIMENT_MIN = 0.2
-HARVEST_SHORT_DELTA = 0.30
+HARVEST_SHORT_DELTA = 0.35        # Last-Call: 0.30-0.40 band (0.35 +/- 0.05) for maximum premium
 HARVEST_SPREAD_WIDTH = 5.0
-HARVEST_MIN_CTW = 0.15
+HARVEST_MIN_CTW = 0.10           # Last-Call: 10% credit-to-width floor
+HARVEST_DTE_MIN = 0             # Last-Call: allow the nearest listed expiry incl. 0-DTE
 
 REGIME_IRON_CONDOR = "iron_condor"
 REGIME_LONG_STRANGLE = "long_strangle"
@@ -437,7 +438,7 @@ def pick_expiry(
     slightly-too-far expiry that survives the catalyst beats a guaranteed
     pre-catalyst loss.
     """
-    lo = nth_trading_day(dte_min, today)
+    lo = (today or date.today()) if dte_min < 1 else nth_trading_day(dte_min, today)
     hi = nth_trading_day(dte_max, today)
     in_band = sorted({c.expiry for c in contracts if lo <= c.expiry <= hi})
     if not_before is not None:
@@ -566,6 +567,7 @@ def plan_iron_condor(
     iv_regime,
     iv_rv_spread: float | None = None,
     today: date | None = None,
+    relax_iv_gates: bool = False,
 ) -> IronCondorPlan:
     """Build an iron condor proposal from a flat list of graded contracts.
 
@@ -573,6 +575,8 @@ def plan_iron_condor(
     not ``None`` it must be >= ``MIN_IV_RV_SPREAD`` — IV has to be pricing in
     more movement than the underlying has actually made, not just be high on its
     own. ``None`` (thin price history) skips the check.
+    ``relax_iv_gates`` (Last-Call "Open Door"): drop the IV-regime and IV-RV
+    checks entirely so eligibility rests only on credit and defined risk.
     """
     mode = getattr(iv_regime, "mode", None)
 
@@ -586,10 +590,10 @@ def plan_iron_condor(
             **kw,
         )
 
-    if not getattr(iv_regime, "trade_eligible", False):
+    if not relax_iv_gates and not getattr(iv_regime, "trade_eligible", False):
         return result(False, f"IV gate blocked: {getattr(iv_regime, 'reason', 'not eligible')}")
 
-    if iv_rv_spread is not None and iv_rv_spread < MIN_IV_RV_SPREAD:
+    if not relax_iv_gates and iv_rv_spread is not None and iv_rv_spread < MIN_IV_RV_SPREAD:
         return result(
             False,
             f"IV-RV spread {iv_rv_spread:+.4f} below {MIN_IV_RV_SPREAD:+.4f} "
@@ -777,10 +781,13 @@ def _plan_vertical(
     short_delta_target: float | None = None,
     spread_width: float | None = None,
     min_ctw: float | None = None,
+    dte_min: int | None = None,
 ) -> IronCondorPlan:
     """``short_delta_target`` / ``spread_width`` / ``min_ctw`` (harvest mode):
     pin the short to a specific delta, the long to a fixed dollar width, and
-    relax the credit-to-width floor. All default to the regular behaviour."""
+    relax the credit-to-width floor. ``dte_min`` overrides the expiry floor
+    (0 -> the nearest listed expiry, including 0-DTE). All default to the
+    regular behaviour."""
     mode = getattr(iv_regime, "mode", None)
     floor_ctw = MIN_CREDIT_TO_WIDTH if min_ctw is None else min_ctw
 
@@ -790,7 +797,10 @@ def _plan_vertical(
             iv_regime_mode=mode, iv_rv_spread=iv_rv_spread, structure=structure, **kw,
         )
 
-    expiry = pick_expiry(contracts, today=today)
+    expiry = pick_expiry(
+        contracts, today=today,
+        **({} if dte_min is None else {"dte_min": dte_min}),
+    )
     if expiry is None:
         return result(False, "no listed expiry in the 1-3 trading-day window")
 
@@ -842,22 +852,24 @@ def _plan_vertical(
 
 
 def plan_bull_put(contracts, *, underlying_price, iv_regime, iv_rv_spread=None, today=None,
-                  short_delta_target=None, spread_width=None, min_ctw=None):
+                  short_delta_target=None, spread_width=None, min_ctw=None, dte_min=None):
     """Sell a put spread below the market — used when the trend is up."""
     return _plan_vertical(
         contracts, "put", REGIME_BULL_PUT, underlying_price=underlying_price,
         iv_regime=iv_regime, iv_rv_spread=iv_rv_spread, today=today,
         short_delta_target=short_delta_target, spread_width=spread_width, min_ctw=min_ctw,
+        dte_min=dte_min,
     )
 
 
 def plan_bear_call(contracts, *, underlying_price, iv_regime, iv_rv_spread=None, today=None,
-                   short_delta_target=None, spread_width=None, min_ctw=None):
+                   short_delta_target=None, spread_width=None, min_ctw=None, dte_min=None):
     """Sell a call spread above the market — used when the trend is down."""
     return _plan_vertical(
         contracts, "call", REGIME_BEAR_CALL, underlying_price=underlying_price,
         iv_regime=iv_regime, iv_rv_spread=iv_rv_spread, today=today,
         short_delta_target=short_delta_target, spread_width=spread_width, min_ctw=min_ctw,
+        dte_min=dte_min,
     )
 
 
@@ -875,6 +887,7 @@ _PLAN_FOR_REGIME = {
 def build_strategy_plan(
     snapshot: dict | None = None, *, today: date | None = None, context=None,
     harvest_mode: bool = False, harvest_sentiment_min: float = HARVEST_SENTIMENT_MIN,
+    relax_iv_gates: bool = False,
 ) -> IronCondorPlan:
     """Detect the market regime for ``snapshot`` and build the matching structure.
 
@@ -926,15 +939,22 @@ def build_strategy_plan(
                 plan_kwargs["not_before"] = floor
                 log.info("STRATEGY [%s]: long-vol expiry floored at %s (macro catalyst)",
                          symbol, floor)
-        # Harvest override: pin the bull put to the directional-theta geometry.
+        # Harvest override: pin the credit spread to the directional-theta
+        # geometry and let it reach for the nearest expiry (incl. 0-DTE).
         if decision.label.startswith("HARVEST"):
             plan_kwargs.update(
                 short_delta_target=HARVEST_SHORT_DELTA,
                 spread_width=HARVEST_SPREAD_WIDTH,
                 min_ctw=HARVEST_MIN_CTW,
+                dte_min=HARVEST_DTE_MIN,
             )
-            log.info("STRATEGY [%s]: HARVEST bull put — %.2f delta short, $%.0f wide, ctw>=%.0f%%",
-                     symbol, HARVEST_SHORT_DELTA, HARVEST_SPREAD_WIDTH, HARVEST_MIN_CTW * 100)
+            log.info("STRATEGY [%s]: HARVEST credit spread — %.2f delta short, $%.0f wide, "
+                     "ctw>=%.0f%%, dte>=%d",
+                     symbol, HARVEST_SHORT_DELTA, HARVEST_SPREAD_WIDTH,
+                     HARVEST_MIN_CTW * 100, HARVEST_DTE_MIN)
+        # Last-Call "Open Door": drop the IV gates on the condor fallback too.
+        if relax_iv_gates and decision.regime == REGIME_IRON_CONDOR:
+            plan_kwargs["relax_iv_gates"] = True
         plan = _PLAN_FOR_REGIME[decision.regime](contracts, **plan_kwargs)
 
     plan.regime = decision.label

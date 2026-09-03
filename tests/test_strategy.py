@@ -129,9 +129,9 @@ def test_plan_builds_full_condor_when_criteria_met() -> None:
 def test_plan_rejects_thin_credit() -> None:
     # widen wings to 20 so credit/width falls well under the MIN_CREDIT_TO_WIDTH gate
     chain = [
-        mk("put", 760, 0.225, 2.05, 2.15),
+        mk("put", 760, 0.225, 1.05, 1.15),
         mk("put", 740, 0.10, 0.40, 0.50),
-        mk("call", 780, 0.225, 2.00, 2.10),
+        mk("call", 780, 0.225, 1.00, 1.10),
         mk("call", 800, 0.10, 0.35, 0.45),
     ]
     plan = s.plan_iron_condor(
@@ -434,8 +434,12 @@ def test_plan_bear_call_is_a_call_credit_spread() -> None:
 
 def test_credit_spread_still_respects_the_credit_to_width_gate() -> None:
     # thin credit relative to a wide wing -> blocked, same MIN_CREDIT_TO_WIDTH rule as the condor
+    thin = [
+        mk("put", 760, 0.275, 1.00, 1.10),
+        mk("put", 750, 0.10, 0.45, 0.55),
+    ]
     plan = s.plan_bull_put(
-        sample_chain(), underlying_price=770.0, iv_regime=BLOCKED, today=TODAY
+        thin, underlying_price=770.0, iv_regime=BLOCKED, today=TODAY
     )
     assert plan.eligible is False
     assert f"below {s.MIN_CREDIT_TO_WIDTH:.0%} target" in plan.reason
@@ -518,11 +522,11 @@ def test_plan_bull_put_honours_an_explicit_delta_and_fixed_width() -> None:
 
 
 def test_plan_bull_put_accepts_a_looser_harvest_credit_to_width_floor() -> None:
-    # a $2-wide spread whose credit is only ~16% of width: blocked at the normal
-    # 20% gate, allowed when the harvest floor is handed in.
+    # a $2-wide spread whose credit is only ~7% of width: blocked at the normal
+    # gate, allowed when a looser harvest floor is handed in.
     thin = [
         mk("put", 763, 0.20, 1.60, 1.70),
-        mk("put", 761, 0.12, 1.28, 1.38),
+        mk("put", 761, 0.12, 1.46, 1.56),
     ]
     blocked = s.plan_bull_put(thin, underlying_price=770.0, iv_regime=BLOCKED_MIDVOL,
                               today=TODAY, short_delta_target=0.20, spread_width=2.0)
@@ -530,20 +534,18 @@ def test_plan_bull_put_accepts_a_looser_harvest_credit_to_width_floor() -> None:
 
     allowed = s.plan_bull_put(thin, underlying_price=770.0, iv_regime=BLOCKED_MIDVOL,
                               today=TODAY, short_delta_target=0.20, spread_width=2.0,
-                              min_ctw=0.15)
+                              min_ctw=0.05)
     assert allowed.eligible is True
 
 
-def _wide_harvest_put_ladder():
-    # $1-apart strikes wide enough for a 0.30-delta short (766) + a $5 long (761)
+def _wide_harvest_put_ladder(expiry=EXPIRY):
+    # $5-apart strikes: a 0.35-delta short (765) + a clean $5 long (760)
     return [
-        mk("put", 770, 0.44, 7.00, 7.20),
-        mk("put", 768, 0.37, 5.60, 5.80),
-        mk("put", 766, 0.30, 4.40, 4.60),
-        mk("put", 764, 0.24, 3.40, 3.60),
-        mk("put", 762, 0.18, 2.40, 2.60),
-        mk("put", 761, 0.15, 2.00, 2.20),
-        mk("put", 760, 0.13, 1.70, 1.90),
+        mk("put", 775, 0.50, 8.10, 8.30, expiry=expiry),
+        mk("put", 770, 0.42, 6.10, 6.30, expiry=expiry),
+        mk("put", 765, 0.35, 4.10, 4.30, expiry=expiry),
+        mk("put", 760, 0.23, 2.50, 2.70, expiry=expiry),
+        mk("put", 755, 0.14, 1.40, 1.60, expiry=expiry),
     ]
 
 
@@ -566,8 +568,65 @@ def test_build_strategy_plan_threads_harvest_into_a_bull_put(caplog) -> None:
     assert plan.eligible is True
     assert plan.wing_width == pytest.approx(s.HARVEST_SPREAD_WIDTH)   # $5 wide
     short, long_ = plan.legs
-    assert short.contract.strike == 766.0                             # ~0.30 delta
-    assert long_.contract.strike == 761.0                             # exactly $5 below
+    assert short.contract.strike == 765.0                             # ~0.35 delta
+    assert long_.contract.strike == 760.0                             # exactly $5 below
+
+
+def test_harvest_bull_put_targets_the_nearest_expiry_including_zero_dte() -> None:
+    """Last-Call: harvest pins dte_min=0 so a same-session expiry is eligible."""
+    import trading_agent.strategy as strat
+
+    snap = _neutral_snap()
+    snap["chain"] = {}
+    ladder = (
+        _wide_harvest_put_ladder(expiry=TODAY)          # 0-DTE
+        + _wide_harvest_put_ladder(expiry=EXPIRY)       # and a later one
+    )
+    orig = strat.build_contracts
+    strat.build_contracts = lambda _chain: ladder
+    try:
+        plan = strat.build_strategy_plan(
+            snap, today=TODAY, context=_HarvestCtx(3), harvest_mode=True,
+        )
+    finally:
+        strat.build_contracts = orig
+
+    assert plan.eligible is True
+    assert plan.expiry == TODAY                          # same session, not the 1-3d band
+
+
+def test_plan_bull_put_can_pin_a_zero_dte_expiry() -> None:
+    ladder = _wide_harvest_put_ladder(expiry=TODAY)
+    default = s.plan_bull_put(
+        ladder, underlying_price=770.0, iv_regime=BLOCKED_MIDVOL, today=TODAY,
+        short_delta_target=0.35, spread_width=5.0,
+    )
+    assert default.eligible is False                     # 1-day floor excludes today
+    zero_dte = s.plan_bull_put(
+        ladder, underlying_price=770.0, iv_regime=BLOCKED_MIDVOL, today=TODAY,
+        short_delta_target=0.35, spread_width=5.0, dte_min=0,
+    )
+    assert zero_dte.eligible is True and zero_dte.expiry == TODAY
+
+
+def test_relax_iv_gates_lets_the_condor_skip_the_iv_checks() -> None:
+    blocked = s.plan_iron_condor(
+        sample_chain(), underlying_price=770.0, iv_regime=BLOCKED, today=TODAY
+    )
+    assert blocked.eligible is False and "IV gate blocked" in blocked.reason
+
+    freed = s.plan_iron_condor(
+        sample_chain(), underlying_price=770.0, iv_regime=BLOCKED, today=TODAY,
+        relax_iv_gates=True,
+    )
+    assert freed.eligible is True
+
+    # also bypasses the IV-RV floor
+    still_freed = s.plan_iron_condor(
+        sample_chain(), underlying_price=770.0, iv_regime=ELIGIBLE,
+        iv_rv_spread=0.001, today=TODAY, relax_iv_gates=True,
+    )
+    assert still_freed.eligible is True
 
 
 # =========================================================================== #

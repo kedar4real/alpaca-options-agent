@@ -151,6 +151,7 @@ def gather(
     *,
     now: datetime | None = None,
     calendar=cg.HIGH_IMPACT_CALENDAR,
+    macro_danger_enabled: bool = True,
     # yfinance pipes (injected in tests)
     vix_fn=None,
     news_fn=None,
@@ -181,7 +182,10 @@ def gather(
     except Exception as exc:  # noqa: BLE001
         events, macro_today = (), False
         errors.append(f"macro: {exc}")
-    macro_danger = bool(events)
+    macro_danger = bool(events) and macro_danger_enabled
+    if events and not macro_danger_enabled:
+        log.warning("MACRO_DANGER override SUPPRESSED by config — %d event(s) "
+                    "in range but the guard is off for this session", len(events))
 
     # -- VIX term structure (yf) -> proxy (Alpaca) ------------------------ #
     vix = vxv = ratio = None

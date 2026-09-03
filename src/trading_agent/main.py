@@ -161,6 +161,7 @@ class Config:
     self_correction: bool = True                # post_trade_analysis -> lessons_learned.json
     hard_stop_et: str = "2026-09-04 10:30"      # competition hard stop (ET wall clock)
     halt_file: str = "HALT"                     # if this file exists: manage only, no new trades
+    disable_macro_danger: bool = False          # final-session override: suppress the MACRO_DANGER long-vol force
     mcp_enabled: bool = True                    # try the Alpaca MCP server for reads
     mcp_server_dir: str = "C:/alpaca-hackathon/alpaca-mcp-server"
 
@@ -194,6 +195,8 @@ class Config:
             not in ("0", "false", "no", "off"),
             hard_stop_et=os.environ.get("AGENT_HARD_STOP_ET", "2026-09-04 10:30"),
             halt_file=os.environ.get("AGENT_HALT_FILE", "HALT"),
+            disable_macro_danger=os.environ.get("AGENT_DISABLE_MACRO_DANGER", "false")
+            .strip().lower() in ("1", "true", "yes", "on"),
             mcp_enabled=os.environ.get("AGENT_MCP", "true").strip().lower()
             not in ("0", "false", "no", "off"),
             mcp_server_dir=os.environ.get(
@@ -536,9 +539,15 @@ def halt_status(account: AccountState) -> str | None:
     return None
 
 
-def update_sticky_halt(session: Session, account: AccountState) -> bool:
+def update_sticky_halt(session: Session, account: AccountState, *, flatten_fn=None) -> bool:
     """Latch the competition-level halt once the 5% floor is breached. Returns
-    True if the state changed (caller should persist)."""
+    True if the state changed (caller should persist).
+
+    ``flatten_fn`` (the panic button): called once, on the latching cycle, to
+    close every open position. Breaching the floor is not just "stop opening" —
+    it is "get flat now and realise the loss rather than ride it lower". Any
+    exception from the flatten is logged and swallowed so the halt still latches.
+    """
     if session.trading_halted:
         return False
     total_dd = account.starting_equity - account.current_equity
@@ -548,6 +557,12 @@ def update_sticky_halt(session: Session, account: AccountState) -> bool:
             "STICKY HALT LATCHED — total drawdown $%s breached the 5%% floor; "
             "no new trades for the rest of the competition", f"{total_dd:,.0f}",
         )
+        if flatten_fn is not None:
+            try:
+                result = flatten_fn()
+                log.warning("PANIC FLATTEN on floor breach — %s", result)
+            except Exception as exc:  # noqa: BLE001 - the halt must latch regardless
+                log.error("PANIC FLATTEN failed (%s) — halt still latched", exc)
         alerts.notify("halt", reason=f"total drawdown ${total_dd:,.0f} breached the 5% floor")
         return True
     return False
@@ -1172,7 +1187,10 @@ def _gather_market_context(conn: AlpacaConnection, config: Config,
     Alpaca fallback). Fail-safe to 'No Context Available' so a data outage never
     blocks trading."""
     try:
-        return intelligence_hub.gather(conn.creds, config.tickers, now=now_et)
+        return intelligence_hub.gather(
+            conn.creds, config.tickers, now=now_et,
+            macro_danger_enabled=not config.disable_macro_danger,
+        )
     except Exception as exc:  # noqa: BLE001
         log.error("context gather failed: %s", exc)
         return context_gatherer.MarketContext.unavailable(str(exc))
@@ -1379,8 +1397,8 @@ def run_cycle(conn: AlpacaConnection, session: Session, config: Config, *,
             except Exception as exc:  # noqa: BLE001
                 log.warning("post_trade_analysis failed for %s: %s", ev.get("id"), exc)
 
-    # 2. sticky halt latch, then rebuild state (positions may have changed)
-    update_sticky_halt(session, account)
+    # 2. sticky halt latch (+ panic flatten on floor breach), then rebuild state
+    update_sticky_halt(session, account, flatten_fn=conn.flatten_all)
     account = _account()
 
     # 2b. operator HALT file — keep managing open positions (done above) and

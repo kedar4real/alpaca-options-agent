@@ -428,6 +428,31 @@ def test_update_sticky_halt_noop_when_within_floor() -> None:
     assert sess.trading_halted is False
 
 
+def test_update_sticky_halt_flattens_the_book_when_it_latches() -> None:
+    # Panic button: breaching the 5% floor doesn't just block new trades, it
+    # closes everything open — realise the loss, don't ride it lower.
+    sess = Session(starting_equity=100_000.0)
+    calls = []
+    changed = update_sticky_halt(
+        sess, account(current=94_900.0), flatten_fn=lambda: calls.append(True) or (2, 0)
+    )
+    assert changed is True
+    assert calls == [True], "flatten_fn must be invoked exactly once on latch"
+
+
+def test_update_sticky_halt_does_not_flatten_when_within_floor() -> None:
+    sess = Session(starting_equity=100_000.0)
+    calls = []
+    update_sticky_halt(sess, account(current=96_000.0), flatten_fn=lambda: calls.append(True))
+    assert calls == []
+
+
+def test_update_sticky_halt_flatten_fn_is_optional() -> None:
+    # Back-compat: existing callers pass no flatten_fn and must still work.
+    sess = Session(starting_equity=100_000.0)
+    assert update_sticky_halt(sess, account(current=94_900.0)) is True
+
+
 # ======================================================================= #
 # Session persistence — starting_equity is authoritative on restart
 # ======================================================================= #
@@ -641,6 +666,9 @@ class _FakeConn:
 
     def get_positions(self):
         return []
+
+    def flatten_all(self):
+        return (0, 0)
 
     def account_snapshot(self):
         a = _FakeAcct()

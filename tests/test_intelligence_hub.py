@@ -79,6 +79,22 @@ def test_no_macro_danger_when_calendar_is_clear() -> None:
     assert mc.macro_danger is False
 
 
+def test_macro_danger_can_be_disabled_for_the_final_day() -> None:
+    # Same calendar/clock that trips MACRO_DANGER above, but the operator has
+    # switched the guard off for the last session — no override, credit
+    # structures stay available.
+    mc = ih.gather(None, ["SPY"], now=datetime(2026, 9, 3, 10, 0, tzinfo=UTC),
+                   calendar=_CAL, macro_danger_enabled=False, **_yf_ok())
+    assert mc.macro_danger is False
+    assert "MACRO_DANGER" not in mc.regime_flags()
+
+
+def test_macro_danger_enabled_by_default() -> None:
+    mc = ih.gather(None, ["SPY"], now=datetime(2026, 9, 3, 10, 0, tzinfo=UTC),
+                   calendar=_CAL, **_yf_ok())
+    assert mc.macro_danger is True
+
+
 # ======================================================================= #
 # RSI + news land on the tickers
 # ======================================================================= #

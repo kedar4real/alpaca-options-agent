@@ -120,6 +120,23 @@ def test_stop_loss_not_fired_just_inside_the_stop() -> None:
     assert decide_exit(valuation(2.99), is_expiring=False) is None
 
 
+def test_stop_loss_can_key_off_a_fraction_of_max_loss() -> None:
+    # credit 2.00, $5 wings -> max loss 3.00/spread. 50% of that is 1.50.
+    # loss 1.60: trips the max-loss rule; the 2x-credit rule (4.00) is nowhere near.
+    v = valuation(3.60, credit=2.00)                       # pnl_per_spread = -1.60
+    assert decide_exit(v, is_expiring=False) is None
+    assert decide_exit(
+        v, is_expiring=False, stop_loss_max_loss_fraction=0.5
+    ) == "stop-loss"
+
+
+def test_max_loss_stop_not_fired_when_loss_is_under_the_fraction() -> None:
+    v = valuation(3.40, credit=2.00)                       # pnl_per_spread = -1.40 < 1.50
+    assert decide_exit(
+        v, is_expiring=False, stop_loss_max_loss_fraction=0.5
+    ) is None
+
+
 def test_expiry_close_fires_when_flagged_and_no_pnl_trigger() -> None:
     assert decide_exit(valuation(1.00), is_expiring=True) == "expiry"
 
@@ -451,6 +468,27 @@ def test_update_sticky_halt_flatten_fn_is_optional() -> None:
     # Back-compat: existing callers pass no flatten_fn and must still work.
     sess = Session(starting_equity=100_000.0)
     assert update_sticky_halt(sess, account(current=94_900.0)) is True
+
+
+def test_update_sticky_halt_trips_on_an_absolute_panic_equity_line() -> None:
+    # $95,100 is well inside the 5% floor ($95,000) — the panic line fires first.
+    sess = Session(starting_equity=99_870.90)
+    calls = []
+    changed = update_sticky_halt(
+        sess, account(starting=99_870.90, current=95_050.0),
+        flatten_fn=lambda: calls.append(1) or (0, 0),
+        panic_equity=95_100.0,
+    )
+    assert changed is True and sess.trading_halted is True
+    assert calls == [1]
+
+
+def test_update_sticky_halt_panic_line_does_not_fire_above_it() -> None:
+    sess = Session(starting_equity=99_870.90)
+    assert update_sticky_halt(
+        sess, account(starting=99_870.90, current=95_200.0), panic_equity=95_100.0
+    ) is False
+    assert sess.trading_halted is False
 
 
 # ======================================================================= #

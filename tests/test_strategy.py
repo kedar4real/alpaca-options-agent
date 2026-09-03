@@ -472,7 +472,18 @@ def test_harvest_forces_bull_put_when_sentiment_is_bullish() -> None:
     assert d.direction == "up"
 
 
-def test_harvest_stands_aside_when_sentiment_not_bullish() -> None:
+def test_harvest_forces_bear_call_when_sentiment_is_bearish() -> None:
+    d = s.select_regime(
+        _neutral_snap(), context=_HarvestCtx(-2),
+        harvest_mode=True, harvest_sentiment_min=0.2,
+    )
+    assert d.regime == s.REGIME_BEAR_CALL
+    assert "HARVEST" in d.label and "bearish" in d.label
+    assert d.direction == "down"
+
+
+def test_harvest_stands_aside_when_sentiment_is_flat() -> None:
+    # score 0 is inside the +/-0.2 band -> no directional signal, fall through
     d = s.select_regime(_neutral_snap(), context=_HarvestCtx(0), harvest_mode=True)
     assert d.regime == s.REGIME_NONE          # falls through to the quant regime
 
@@ -523,13 +534,26 @@ def test_plan_bull_put_accepts_a_looser_harvest_credit_to_width_floor() -> None:
     assert allowed.eligible is True
 
 
+def _wide_harvest_put_ladder():
+    # $1-apart strikes wide enough for a 0.30-delta short (766) + a $5 long (761)
+    return [
+        mk("put", 770, 0.44, 7.00, 7.20),
+        mk("put", 768, 0.37, 5.60, 5.80),
+        mk("put", 766, 0.30, 4.40, 4.60),
+        mk("put", 764, 0.24, 3.40, 3.60),
+        mk("put", 762, 0.18, 2.40, 2.60),
+        mk("put", 761, 0.15, 2.00, 2.20),
+        mk("put", 760, 0.13, 1.70, 1.90),
+    ]
+
+
 def test_build_strategy_plan_threads_harvest_into_a_bull_put(caplog) -> None:
     import trading_agent.strategy as strat
 
     snap = _neutral_snap()
     snap["chain"] = {}
     orig = strat.build_contracts
-    strat.build_contracts = lambda _chain: _harvest_put_ladder()
+    strat.build_contracts = lambda _chain: _wide_harvest_put_ladder()
     try:
         plan = strat.build_strategy_plan(
             snap, today=TODAY, context=_HarvestCtx(3),
@@ -540,7 +564,10 @@ def test_build_strategy_plan_threads_harvest_into_a_bull_put(caplog) -> None:
 
     assert plan.structure == s.REGIME_BULL_PUT
     assert plan.eligible is True
-    assert plan.wing_width == pytest.approx(2.0)
+    assert plan.wing_width == pytest.approx(s.HARVEST_SPREAD_WIDTH)   # $5 wide
+    short, long_ = plan.legs
+    assert short.contract.strike == 766.0                             # ~0.30 delta
+    assert long_.contract.strike == 761.0                             # exactly $5 below
 
 
 # =========================================================================== #

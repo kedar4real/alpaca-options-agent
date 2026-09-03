@@ -150,6 +150,7 @@ class Config:
     review_timeout_s: float = 45.0
     profit_target_fraction: float = 0.35        # competition window: take credit at 35%
     stop_loss_multiple: float = 2.0
+    stop_loss_max_loss_fraction: float | None = None  # credit stop at this fraction of defined max loss
     debit_stop_fraction: float = 0.50           # close a debit trade down this much of the premium
     trail_arm_fraction: float = 0.25            # start trailing once favourable P&L reaches this
     trail_giveback_fraction: float = 0.10       # exit if P&L falls this far below its peak
@@ -166,6 +167,7 @@ class Config:
     disable_macro_danger: bool = False          # final-session override: suppress the MACRO_DANGER long-vol force
     harvest_mode: bool = False                  # final-session: force bull puts on bullish-sentiment names
     harvest_sentiment_min: float = 0.2          # news score above this -> harvest a bull put
+    panic_flatten_equity: float | None = None   # absolute equity line: at/below -> panic flatten + halt
     mcp_enabled: bool = True                    # try the Alpaca MCP server for reads
     mcp_server_dir: str = "C:/alpaca-hackathon/alpaca-mcp-server"
 
@@ -186,6 +188,9 @@ class Config:
             review_timeout_s=_env_float("AGENT_REVIEW_TIMEOUT_SECONDS", 45.0),
             profit_target_fraction=_env_float("AGENT_PROFIT_TARGET_FRACTION", 0.35),
             stop_loss_multiple=_env_float("AGENT_STOP_LOSS_MULTIPLE", 2.0),
+            stop_loss_max_loss_fraction=(
+                _env_float("AGENT_STOP_LOSS_MAX_LOSS_FRACTION", 0.0) or None
+            ),
             debit_stop_fraction=_env_float("AGENT_DEBIT_STOP_FRACTION", 0.50),
             trail_arm_fraction=_env_float("AGENT_TRAIL_ARM_FRACTION", 0.25),
             trail_giveback_fraction=_env_float("AGENT_TRAIL_GIVEBACK_FRACTION", 0.10),
@@ -204,6 +209,7 @@ class Config:
             harvest_mode=os.environ.get("AGENT_HARVEST_MODE", "false")
             .strip().lower() in ("1", "true", "yes", "on"),
             harvest_sentiment_min=_env_float("AGENT_HARVEST_SENTIMENT_MIN", 0.2),
+            panic_flatten_equity=(_env_float("AGENT_PANIC_FLATTEN_EQUITY", 0.0) or None),
             mcp_enabled=os.environ.get("AGENT_MCP", "true").strip().lower()
             not in ("0", "false", "no", "off"),
             mcp_server_dir=os.environ.get(
@@ -546,31 +552,42 @@ def halt_status(account: AccountState) -> str | None:
     return None
 
 
-def update_sticky_halt(session: Session, account: AccountState, *, flatten_fn=None) -> bool:
-    """Latch the competition-level halt once the 5% floor is breached. Returns
-    True if the state changed (caller should persist).
+def update_sticky_halt(
+    session: Session, account: AccountState, *, flatten_fn=None, panic_equity: float | None = None
+) -> bool:
+    """Latch the competition-level halt once the drawdown floor is breached.
+    Returns True if the state changed (caller should persist).
+
+    Two triggers, whichever fires first:
+      * the 5% total-drawdown floor (fraction of *starting* equity); and
+      * ``panic_equity`` — an absolute equity line (e.g. $95,100), so the final
+        session can hold a tighter, explicit stop than the 5% rule implies.
 
     ``flatten_fn`` (the panic button): called once, on the latching cycle, to
-    close every open position. Breaching the floor is not just "stop opening" —
-    it is "get flat now and realise the loss rather than ride it lower". Any
-    exception from the flatten is logged and swallowed so the halt still latches.
+    close every open position. Breaching the floor is not "stop opening", it is
+    "get flat now and realise the loss rather than ride it lower". Any exception
+    from the flatten is logged and swallowed so the halt still latches.
     """
     if session.trading_halted:
         return False
     total_dd = account.starting_equity - account.current_equity
-    if total_dd >= TOTAL_DRAWDOWN_FLOOR_PCT * account.starting_equity:
+    floor_breach = total_dd >= TOTAL_DRAWDOWN_FLOOR_PCT * account.starting_equity
+    panic_breach = panic_equity is not None and account.current_equity <= panic_equity
+    if floor_breach or panic_breach:
         session.trading_halted = True
-        log.warning(
-            "STICKY HALT LATCHED — total drawdown $%s breached the 5%% floor; "
-            "no new trades for the rest of the competition", f"{total_dd:,.0f}",
+        why = (
+            f"equity ${account.current_equity:,.0f} <= panic line ${panic_equity:,.0f}"
+            if panic_breach and not floor_breach
+            else f"total drawdown ${total_dd:,.0f} breached the 5% floor"
         )
+        log.warning("STICKY HALT LATCHED — %s; no new trades for the rest of the competition", why)
         if flatten_fn is not None:
             try:
                 result = flatten_fn()
-                log.warning("PANIC FLATTEN on floor breach — %s", result)
+                log.warning("PANIC FLATTEN — %s (%s)", why, result)
             except Exception as exc:  # noqa: BLE001 - the halt must latch regardless
                 log.error("PANIC FLATTEN failed (%s) — halt still latched", exc)
-        alerts.notify("halt", reason=f"total drawdown ${total_dd:,.0f} breached the 5% floor")
+        alerts.notify("halt", reason=why)
         return True
     return False
 
@@ -606,12 +623,39 @@ class CondorValuation:
         return self.pnl_per_spread / debit if debit else 0.0
 
 
+def _spread_width(condor: "TrackedCondor") -> float | None:
+    """Wing width in dollars from the OCC leg strikes — the wider side for a
+    4-leg condor, the single gap for a 2-leg vertical. None if the legs cannot
+    be parsed."""
+    from .alpaca_trader import parse_occ_symbol
+
+    try:
+        by_right: dict[str, list[float]] = {}
+        for lg in condor.legs:
+            _root, _exp, right, strike = parse_occ_symbol(lg.symbol or "")
+            by_right.setdefault(right, []).append(strike)
+        widths = [max(v) - min(v) for v in by_right.values() if len(v) >= 2]
+        return max(widths) if widths else None
+    except (ValueError, TypeError):
+        return None
+
+
+def _max_loss_per_spread(condor: "TrackedCondor") -> float | None:
+    """Per-share worst case for a defined-risk credit structure:
+    ``wing_width - entry_credit``. None if the width can't be derived."""
+    w = _spread_width(condor)
+    if w is None:
+        return None
+    return w - condor.entry_credit
+
+
 def decide_exit(
     valuation: CondorValuation,
     *,
     is_expiring: bool,
     profit_target_fraction: float = 0.35,
     stop_loss_multiple: float = 2.0,
+    stop_loss_max_loss_fraction: float | None = None,
     debit_stop_fraction: float = 0.50,
     catalyst_hold: bool = False,
     trail_arm_fraction: float = 0.25,
@@ -621,7 +665,9 @@ def decide_exit(
     profit target, then stop loss, then expiry. First match wins.
 
     Credit structures (iron condor, verticals): profit at ``profit_target_fraction``
-    of the credit captured; stop at a loss of ``stop_loss_multiple`` x the credit.
+    of the credit captured; stop at a loss of ``stop_loss_multiple`` x the credit,
+    OR — when ``stop_loss_max_loss_fraction`` is set — at that fraction of the
+    structure's defined max loss (``wing_width - credit``), whichever trips first.
     Debit structures (long strangle): profit at +``profit_target_fraction`` of the
     premium; stop at -``debit_stop_fraction`` of the premium (you can never lose
     more than the premium, so the credit "2x" stop does not apply).
@@ -663,6 +709,10 @@ def decide_exit(
             return "trailing-take-profit"
         if valuation.pnl_per_spread <= -stop_loss_multiple * valuation.condor.entry_credit:
             return "stop-loss"
+        if stop_loss_max_loss_fraction is not None:
+            ml = _max_loss_per_spread(valuation.condor)
+            if ml is not None and valuation.pnl_per_spread <= -stop_loss_max_loss_fraction * ml:
+                return "stop-loss"
     if is_expiring:
         return "expiry"
     return None
@@ -714,6 +764,7 @@ def manage_open_positions(
             is_expiring=val.condor.id in expiring_ids,
             profit_target_fraction=config.profit_target_fraction,
             stop_loss_multiple=config.stop_loss_multiple,
+            stop_loss_max_loss_fraction=config.stop_loss_max_loss_fraction,
             debit_stop_fraction=config.debit_stop_fraction,
             catalyst_hold=hold,
             trail_arm_fraction=config.trail_arm_fraction,
@@ -1434,7 +1485,8 @@ def run_cycle(conn: AlpacaConnection, session: Session, config: Config, *,
                 log.warning("post_trade_analysis failed for %s: %s", ev.get("id"), exc)
 
     # 2. sticky halt latch (+ panic flatten on floor breach), then rebuild state
-    update_sticky_halt(session, account, flatten_fn=conn.flatten_all)
+    update_sticky_halt(session, account, flatten_fn=conn.flatten_all,
+                       panic_equity=config.panic_flatten_equity)
     account = _account()
 
     # 2b. operator HALT file — keep managing open positions (done above) and

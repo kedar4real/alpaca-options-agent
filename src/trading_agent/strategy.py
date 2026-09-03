@@ -79,15 +79,18 @@ ADX_RANGE_LOW = 20.0
 STRANGLE_DELTA_TARGET = 0.25      # long strangle legs: ~0.25 delta each side
 
 # --- Final-session HARVEST override (directional theta grab) ---------------- #
-# Off unless main enables it. When a ticker's news-sentiment score clears
-# HARVEST_SENTIMENT_MIN, force a bull put credit spread: short leg near
-# HARVEST_SHORT_DELTA (~0.20 = ~80% POP), protective long exactly
-# HARVEST_SPREAD_WIDTH dollars further OTM. A 2-leg vertical crosses roughly
-# half the bid/ask a 4-leg condor does, so a lower credit-to-width floor still
-# clears net of friction.
+# Off unless main enables it. A news-sentiment score clearing +/-HARVEST_SENTIMENT_MIN
+# forces a directional credit spread, bypassing the quant regime:
+#   score > +threshold  ->  BULL PUT   (short put below the market)
+#   score < -threshold  ->  BEAR CALL  (short call above the market)
+# Short leg near HARVEST_SHORT_DELTA (~0.30 = ~70% POP), protective long exactly
+# HARVEST_SPREAD_WIDTH dollars further OTM. The wide $5 leg keeps the contract
+# count low, which is what stops bid/ask friction eating the credit; the
+# credit-to-width floor stays at HARVEST_MIN_CTW so a weak premium is still a
+# no-trade.
 HARVEST_SENTIMENT_MIN = 0.2
-HARVEST_SHORT_DELTA = 0.20
-HARVEST_SPREAD_WIDTH = 2.0
+HARVEST_SHORT_DELTA = 0.30
+HARVEST_SPREAD_WIDTH = 5.0
 HARVEST_MIN_CTW = 0.15
 
 REGIME_IRON_CONDOR = "iron_condor"
@@ -269,23 +272,31 @@ def select_regime(
     into a known event or an inverted VIX curve. A quant "No trade" is left
     alone: the override never manufactures a position.
 
-    ``harvest_mode`` (final-session only): checked *first*. When a ticker's
-    news-sentiment score is above ``harvest_sentiment_min`` it forces a
-    **bull put credit spread** regardless of the quant regime — a deliberate
-    directional theta grab. Bearish / neutral sentiment falls through to the
-    normal logic, so this never manufactures a trade the sentiment doesn't back.
+    ``harvest_mode`` (final-session only): checked *first*. A news-sentiment
+    score above ``+harvest_sentiment_min`` forces a **bull put**; below
+    ``-harvest_sentiment_min`` forces a **bear call** — a deliberate directional
+    theta grab that bypasses the quant regime. Sentiment inside the band falls
+    through to the normal logic, so this never manufactures a trade the news
+    doesn't back.
     """
     if harvest_mode and context is not None:
         sym = snapshot.get("symbol") or snapshot.get("underlying") or "?"
         tc = context.ticker(sym) if hasattr(context, "ticker") else None
         score = getattr(tc, "news_score", 0) or 0
+        er = efficiency_ratio(snapshot.get("daily_closes"))
         if score > harvest_sentiment_min:
-            er = efficiency_ratio(snapshot.get("daily_closes"))
             return RegimeDecision(
                 REGIME_BULL_PUT,
                 f"HARVEST: bullish sentiment (score {score}) -> Bull Put credit spread",
-                f"harvest mode — news score {score} > {harvest_sentiment_min}",
+                f"harvest mode — news score {score} > +{harvest_sentiment_min}",
                 er, "up",
+            )
+        if score < -harvest_sentiment_min:
+            return RegimeDecision(
+                REGIME_BEAR_CALL,
+                f"HARVEST: bearish sentiment (score {score}) -> Bear Call credit spread",
+                f"harvest mode — news score {score} < -{harvest_sentiment_min}",
+                er, "down",
             )
 
     base = _quant_regime(

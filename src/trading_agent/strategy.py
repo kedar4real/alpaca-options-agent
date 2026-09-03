@@ -78,6 +78,18 @@ ADX_TREND_HIGH = 25.0
 ADX_RANGE_LOW = 20.0
 STRANGLE_DELTA_TARGET = 0.25      # long strangle legs: ~0.25 delta each side
 
+# --- Final-session HARVEST override (directional theta grab) ---------------- #
+# Off unless main enables it. When a ticker's news-sentiment score clears
+# HARVEST_SENTIMENT_MIN, force a bull put credit spread: short leg near
+# HARVEST_SHORT_DELTA (~0.20 = ~80% POP), protective long exactly
+# HARVEST_SPREAD_WIDTH dollars further OTM. A 2-leg vertical crosses roughly
+# half the bid/ask a 4-leg condor does, so a lower credit-to-width floor still
+# clears net of friction.
+HARVEST_SENTIMENT_MIN = 0.2
+HARVEST_SHORT_DELTA = 0.20
+HARVEST_SPREAD_WIDTH = 2.0
+HARVEST_MIN_CTW = 0.15
+
 REGIME_IRON_CONDOR = "iron_condor"
 REGIME_LONG_STRANGLE = "long_strangle"
 REGIME_BULL_PUT = "bull_put"
@@ -247,13 +259,35 @@ def select_regime(
     low_iv_rv: float = LOW_IV_RV_SPREAD,
     er_threshold: float = RANGE_BOUND_ER,
     context=None,
+    harvest_mode: bool = False,
+    harvest_sentiment_min: float = HARVEST_SENTIMENT_MIN,
 ) -> RegimeDecision:
     """Quantitative regime (see :func:`_quant_regime`), then a **contextual
     override**: when the IntelligenceHub flags ``MACRO_DANGER`` or
     ``PANIC_REGIME``, any *short-volatility* selection (iron condor / credit
     spread) is vetoed and swapped for a **long strangle** — don't sell premium
     into a known event or an inverted VIX curve. A quant "No trade" is left
-    alone: the override never manufactures a position."""
+    alone: the override never manufactures a position.
+
+    ``harvest_mode`` (final-session only): checked *first*. When a ticker's
+    news-sentiment score is above ``harvest_sentiment_min`` it forces a
+    **bull put credit spread** regardless of the quant regime — a deliberate
+    directional theta grab. Bearish / neutral sentiment falls through to the
+    normal logic, so this never manufactures a trade the sentiment doesn't back.
+    """
+    if harvest_mode and context is not None:
+        sym = snapshot.get("symbol") or snapshot.get("underlying") or "?"
+        tc = context.ticker(sym) if hasattr(context, "ticker") else None
+        score = getattr(tc, "news_score", 0) or 0
+        if score > harvest_sentiment_min:
+            er = efficiency_ratio(snapshot.get("daily_closes"))
+            return RegimeDecision(
+                REGIME_BULL_PUT,
+                f"HARVEST: bullish sentiment (score {score}) -> Bull Put credit spread",
+                f"harvest mode — news score {score} > {harvest_sentiment_min}",
+                er, "up",
+            )
+
     base = _quant_regime(
         snapshot, min_iv_rv=min_iv_rv, low_iv_rv=low_iv_rv, er_threshold=er_threshold
     )
@@ -472,11 +506,16 @@ def select_long_leg(
     legs: list[OptionContract],
     short_leg: OptionContract,
     right: str,
+    *,
+    width: float | None = None,
 ) -> tuple[OptionContract | None, str]:
     """Protective long: ~0.10 delta if available, else ~$5 further OTM.
 
-    Returns ``(contract, rule)`` where ``rule`` is ``"delta"``, ``"otm-offset"``
-    or ``"none-further-otm"``.
+    ``width`` (harvest mode): ignore delta entirely and take the listed strike
+    closest to exactly ``width`` dollars further OTM than the short.
+
+    Returns ``(contract, rule)`` where ``rule`` is ``"delta"``, ``"otm-offset"``,
+    ``"fixed-width"`` or ``"none-further-otm"``.
     """
     if right == "put":
         further = [c for c in legs if c.strike < short_leg.strike]
@@ -484,6 +523,12 @@ def select_long_leg(
         further = [c for c in legs if c.strike > short_leg.strike]
     if not further:
         return None, "none-further-otm"
+
+    if width is not None:
+        want = (
+            short_leg.strike - width if right == "put" else short_leg.strike + width
+        )
+        return min(further, key=lambda c: abs(c.strike - want)), "fixed-width"
 
     graded = [c for c in further if c.abs_delta is not None]
     near_target = [
@@ -718,8 +763,15 @@ def _plan_vertical(
     iv_regime,
     iv_rv_spread: float | None = None,
     today: date | None = None,
+    short_delta_target: float | None = None,
+    spread_width: float | None = None,
+    min_ctw: float | None = None,
 ) -> IronCondorPlan:
+    """``short_delta_target`` / ``spread_width`` / ``min_ctw`` (harvest mode):
+    pin the short to a specific delta, the long to a fixed dollar width, and
+    relax the credit-to-width floor. All default to the regular behaviour."""
     mode = getattr(iv_regime, "mode", None)
+    floor_ctw = MIN_CREDIT_TO_WIDTH if min_ctw is None else min_ctw
 
     def result(eligible: bool, reason: str, **kw) -> IronCondorPlan:
         return IronCondorPlan(
@@ -732,12 +784,19 @@ def _plan_vertical(
         return result(False, "no listed expiry in the 1-3 trading-day window")
 
     legs_for_right = [c for c in contracts if c.expiry == expiry and c.right == right]
-    delta_target = dynamic_short_delta(getattr(iv_regime, "atm_iv", None))
-    tgt = None if delta_target == SHORT_DELTA_TARGET else delta_target
-    short = select_short_leg(legs_for_right, target=tgt)
+    if short_delta_target is not None:
+        delta_target = short_delta_target
+        short = select_leg_near_delta(
+            legs_for_right, delta_target,
+            lo=delta_target - 0.05, hi=delta_target + 0.05,
+        )
+    else:
+        delta_target = dynamic_short_delta(getattr(iv_regime, "atm_iv", None))
+        tgt = None if delta_target == SHORT_DELTA_TARGET else delta_target
+        short = select_short_leg(legs_for_right, target=tgt)
     if short is None:
         return result(False, f"no short {right} near {delta_target:.2f} delta", expiry=expiry)
-    long_leg, rule = select_long_leg(legs_for_right, short, right)
+    long_leg, rule = select_long_leg(legs_for_right, short, right, width=spread_width)
     if long_leg is None:
         return result(False, f"no protective long {right} ({rule})", expiry=expiry)
 
@@ -757,9 +816,9 @@ def _plan_vertical(
     )
     if credit <= 0:
         return result(False, f"net credit <= 0 ({tag})", **priced)
-    if ctw < MIN_CREDIT_TO_WIDTH:
+    if ctw < floor_ctw:
         return result(
-            False, f"credit/width {ctw:.1%} below {MIN_CREDIT_TO_WIDTH:.0%} target ({tag})", **priced
+            False, f"credit/width {ctw:.1%} below {floor_ctw:.0%} target ({tag})", **priced
         )
     if n < 1:
         return result(
@@ -771,19 +830,23 @@ def _plan_vertical(
     return result(True, f"{kind} credit spread — meets credit and risk criteria ({tag})", **priced)
 
 
-def plan_bull_put(contracts, *, underlying_price, iv_regime, iv_rv_spread=None, today=None):
+def plan_bull_put(contracts, *, underlying_price, iv_regime, iv_rv_spread=None, today=None,
+                  short_delta_target=None, spread_width=None, min_ctw=None):
     """Sell a put spread below the market — used when the trend is up."""
     return _plan_vertical(
         contracts, "put", REGIME_BULL_PUT, underlying_price=underlying_price,
         iv_regime=iv_regime, iv_rv_spread=iv_rv_spread, today=today,
+        short_delta_target=short_delta_target, spread_width=spread_width, min_ctw=min_ctw,
     )
 
 
-def plan_bear_call(contracts, *, underlying_price, iv_regime, iv_rv_spread=None, today=None):
+def plan_bear_call(contracts, *, underlying_price, iv_regime, iv_rv_spread=None, today=None,
+                   short_delta_target=None, spread_width=None, min_ctw=None):
     """Sell a call spread above the market — used when the trend is down."""
     return _plan_vertical(
         contracts, "call", REGIME_BEAR_CALL, underlying_price=underlying_price,
         iv_regime=iv_regime, iv_rv_spread=iv_rv_spread, today=today,
+        short_delta_target=short_delta_target, spread_width=spread_width, min_ctw=min_ctw,
     )
 
 
@@ -799,13 +862,16 @@ _PLAN_FOR_REGIME = {
 
 
 def build_strategy_plan(
-    snapshot: dict | None = None, *, today: date | None = None, context=None
+    snapshot: dict | None = None, *, today: date | None = None, context=None,
+    harvest_mode: bool = False, harvest_sentiment_min: float = HARVEST_SENTIMENT_MIN,
 ) -> IronCondorPlan:
     """Detect the market regime for ``snapshot`` and build the matching structure.
 
     Regime A -> Iron Condor, B -> Long Strangle, C -> Bull Put / Bear Call.
     ``context`` is the IntelligenceHub ``MarketContext``: a ``MACRO_DANGER`` /
     ``PANIC_REGIME`` flag vetoes a short-vol selection and forces a long strangle.
+    ``harvest_mode`` forces a bull put on bullish sentiment (see
+    :func:`select_regime`) and builds it at the harvest delta / width / ctw.
     The regime choice is logged explicitly (picked up by the daily summary) and
     attached to the returned plan for the risk_officer prompt. The downstream
     flow is unchanged: this returns an ``IronCondorPlan`` that
@@ -813,7 +879,10 @@ def build_strategy_plan(
     """
     snap = snapshot or get_market_snapshot()
     symbol = snap.get("symbol") or snap.get("underlying") or "?"
-    decision = select_regime(snap, context=context)
+    decision = select_regime(
+        snap, context=context,
+        harvest_mode=harvest_mode, harvest_sentiment_min=harvest_sentiment_min,
+    )
 
     log.info(
         "REGIME [%s]: %s | %s", symbol, decision.label, decision.reason
@@ -846,6 +915,15 @@ def build_strategy_plan(
                 plan_kwargs["not_before"] = floor
                 log.info("STRATEGY [%s]: long-vol expiry floored at %s (macro catalyst)",
                          symbol, floor)
+        # Harvest override: pin the bull put to the directional-theta geometry.
+        if decision.label.startswith("HARVEST"):
+            plan_kwargs.update(
+                short_delta_target=HARVEST_SHORT_DELTA,
+                spread_width=HARVEST_SPREAD_WIDTH,
+                min_ctw=HARVEST_MIN_CTW,
+            )
+            log.info("STRATEGY [%s]: HARVEST bull put — %.2f delta short, $%.0f wide, ctw>=%.0f%%",
+                     symbol, HARVEST_SHORT_DELTA, HARVEST_SPREAD_WIDTH, HARVEST_MIN_CTW * 100)
         plan = _PLAN_FOR_REGIME[decision.regime](contracts, **plan_kwargs)
 
     plan.regime = decision.label

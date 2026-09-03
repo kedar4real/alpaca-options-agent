@@ -83,6 +83,8 @@ from .risk_manager import (
     macro_risk_multiplier,
 )
 from .strategy import (
+    HARVEST_SHORT_DELTA,
+    HARVEST_SPREAD_WIDTH,
     MIN_CREDIT_TO_WIDTH,
     MIN_IV_RV_SPREAD,
     RANGE_BOUND_ER,
@@ -162,6 +164,8 @@ class Config:
     hard_stop_et: str = "2026-09-04 10:30"      # competition hard stop (ET wall clock)
     halt_file: str = "HALT"                     # if this file exists: manage only, no new trades
     disable_macro_danger: bool = False          # final-session override: suppress the MACRO_DANGER long-vol force
+    harvest_mode: bool = False                  # final-session: force bull puts on bullish-sentiment names
+    harvest_sentiment_min: float = 0.2          # news score above this -> harvest a bull put
     mcp_enabled: bool = True                    # try the Alpaca MCP server for reads
     mcp_server_dir: str = "C:/alpaca-hackathon/alpaca-mcp-server"
 
@@ -197,6 +201,9 @@ class Config:
             halt_file=os.environ.get("AGENT_HALT_FILE", "HALT"),
             disable_macro_danger=os.environ.get("AGENT_DISABLE_MACRO_DANGER", "false")
             .strip().lower() in ("1", "true", "yes", "on"),
+            harvest_mode=os.environ.get("AGENT_HARVEST_MODE", "false")
+            .strip().lower() in ("1", "true", "yes", "on"),
+            harvest_sentiment_min=_env_float("AGENT_HARVEST_SENTIMENT_MIN", 0.2),
             mcp_enabled=os.environ.get("AGENT_MCP", "true").strip().lower()
             not in ("0", "false", "no", "off"),
             mcp_server_dir=os.environ.get(
@@ -813,7 +820,15 @@ def evaluate_new_trade(
     every summary); ``context`` is the ``MarketContext`` object (its
     MACRO_DANGER / PANIC_REGIME flags steer ``build_strategy_plan``).
     """
-    plan_fn = plan_fn or (lambda snap, today=None: build_strategy_plan(snap, today=today, context=context))
+    _harvest_kw = (
+        {"harvest_mode": True, "harvest_sentiment_min": config.harvest_sentiment_min}
+        if config.harvest_mode else {}
+    )
+    plan_fn = plan_fn or (
+        lambda snap, today=None: build_strategy_plan(
+            snap, today=today, context=context, **_harvest_kw
+        )
+    )
     to_order_fn = to_order_fn or executor_mod.from_plan
     _clusters = tuple(getattr(context, "correlation_clusters", ()) or ())
     check_fn = check_fn or (lambda o, a: check_order(o, a, correlation_clusters=_clusters))
@@ -1941,6 +1956,21 @@ def startup(config: Config) -> tuple[AlpacaConnection, Session]:
         datetime.now(ET).isoformat(), account_id, f"{session.starting_equity:,.2f}",
         f"{live_equity:,.2f}", ",".join(config.tickers), config.loop_interval_s,
         config.heartbeat_minutes, config.activity_log_file,
+    )
+
+    # Narrative marker for the submission report: what mode this run is in.
+    mode_bits = ["atomic MLEG close (no more leg-by-leg unwinds)"]
+    if config.disable_macro_danger:
+        mode_bits.append("MACRO_DANGER override OFF")
+    if config.harvest_mode:
+        mode_bits.append(
+            f"HARVEST bull-put mode ON — sentiment > {config.harvest_sentiment_min} on any "
+            f"basket name ({', '.join(config.tickers)}) forces a "
+            f"{HARVEST_SHORT_DELTA:.2f}-delta / ${HARVEST_SPREAD_WIDTH:.0f}-wide put credit spread"
+        )
+    offhours_log.info(
+        "RUN MODE\n%s\n  hard stop  %s ET\n  %s\n%s",
+        "=" * 60, config.hard_stop_et, "\n  ".join(mode_bits), "=" * 60,
     )
     return conn, session
 

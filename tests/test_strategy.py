@@ -442,6 +442,108 @@ def test_credit_spread_still_respects_the_credit_to_width_gate() -> None:
 
 
 # =========================================================================== #
+# Final-day HARVEST override — forced bull put on bullish sentiment
+# =========================================================================== #
+class _HarvestCtx:
+    """Minimal MarketContext stand-in: no regime flags, a settable news score."""
+
+    def __init__(self, score):
+        self._score = score
+
+    def regime_flags(self):
+        return []
+
+    def ticker(self, _sym):
+        return SimpleNamespace(news_score=self._score)
+
+
+def _neutral_snap():
+    # IV-RV spread in the dead zone -> the quant regime alone is "No trade"
+    return _snap(atm_iv=0.13, spread=0.004, iv_eligible=True, closes=CHOP)
+
+
+def test_harvest_forces_bull_put_when_sentiment_is_bullish() -> None:
+    d = s.select_regime(
+        _neutral_snap(), context=_HarvestCtx(2),
+        harvest_mode=True, harvest_sentiment_min=0.2,
+    )
+    assert d.regime == s.REGIME_BULL_PUT
+    assert "HARVEST" in d.label
+    assert d.direction == "up"
+
+
+def test_harvest_stands_aside_when_sentiment_not_bullish() -> None:
+    d = s.select_regime(_neutral_snap(), context=_HarvestCtx(0), harvest_mode=True)
+    assert d.regime == s.REGIME_NONE          # falls through to the quant regime
+
+
+def test_harvest_is_off_by_default() -> None:
+    d = s.select_regime(_neutral_snap(), context=_HarvestCtx(5))
+    assert d.regime == s.REGIME_NONE
+
+
+def _harvest_put_ladder():
+    # strikes $1 apart around 763; 0.20-delta short at 763, protective long $2 below
+    return [
+        mk("put", 766, 0.34, 5.00, 5.20),
+        mk("put", 764, 0.24, 3.60, 3.80),
+        mk("put", 763, 0.20, 3.00, 3.20),
+        mk("put", 762, 0.16, 2.40, 2.60),
+        mk("put", 761, 0.13, 1.90, 2.10),
+        mk("put", 760, 0.10, 1.50, 1.70),
+    ]
+
+
+def test_plan_bull_put_honours_an_explicit_delta_and_fixed_width() -> None:
+    plan = s.plan_bull_put(
+        _harvest_put_ladder(), underlying_price=770.0, iv_regime=BLOCKED_MIDVOL,
+        today=TODAY, short_delta_target=0.20, spread_width=2.0,
+    )
+    assert plan.eligible is True
+    short, long_ = plan.legs
+    assert short.contract.strike == 763.0        # ~0.20 delta short
+    assert long_.contract.strike == 761.0        # exactly $2 below
+    assert plan.wing_width == pytest.approx(2.0)
+
+
+def test_plan_bull_put_accepts_a_looser_harvest_credit_to_width_floor() -> None:
+    # a $2-wide spread whose credit is only ~16% of width: blocked at the normal
+    # 20% gate, allowed when the harvest floor is handed in.
+    thin = [
+        mk("put", 763, 0.20, 1.60, 1.70),
+        mk("put", 761, 0.12, 1.28, 1.38),
+    ]
+    blocked = s.plan_bull_put(thin, underlying_price=770.0, iv_regime=BLOCKED_MIDVOL,
+                              today=TODAY, short_delta_target=0.20, spread_width=2.0)
+    assert blocked.eligible is False
+
+    allowed = s.plan_bull_put(thin, underlying_price=770.0, iv_regime=BLOCKED_MIDVOL,
+                              today=TODAY, short_delta_target=0.20, spread_width=2.0,
+                              min_ctw=0.15)
+    assert allowed.eligible is True
+
+
+def test_build_strategy_plan_threads_harvest_into_a_bull_put(caplog) -> None:
+    import trading_agent.strategy as strat
+
+    snap = _neutral_snap()
+    snap["chain"] = {}
+    orig = strat.build_contracts
+    strat.build_contracts = lambda _chain: _harvest_put_ladder()
+    try:
+        plan = strat.build_strategy_plan(
+            snap, today=TODAY, context=_HarvestCtx(3),
+            harvest_mode=True, harvest_sentiment_min=0.2,
+        )
+    finally:
+        strat.build_contracts = orig
+
+    assert plan.structure == s.REGIME_BULL_PUT
+    assert plan.eligible is True
+    assert plan.wing_width == pytest.approx(2.0)
+
+
+# =========================================================================== #
 # build_strategy_plan — regime dispatch + explicit logging
 # =========================================================================== #
 def test_build_strategy_plan_dispatches_and_logs_regime(caplog) -> None:

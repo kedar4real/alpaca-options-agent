@@ -1084,10 +1084,31 @@ class AlpacaConnection:
             log.error("cancel_order(%s) failed: %s", order_id, exc)
 
     def close_condor(self, condor: TrackedCondor) -> None:
-        for leg in condor.legs:
-            if not leg.symbol:
-                continue
-            self.trading.close_position(leg.symbol)
+        """Flatten a tracked multi-leg position with ONE reversing MLEG market
+        order (see ``executor.build_close_request``). Legging out one
+        ``close_position`` call at a time is what left orphan legs and got
+        rejected mid-unwind ("account not eligible to trade uncovered option
+        contracts"); the atomic combo can't do that.
+
+        Fallback, only if the combo submit itself fails: close leg by leg but
+        buy back every SHORT leg before selling any LONG leg, so the position is
+        never transiently naked."""
+        legs = [leg for leg in condor.legs if leg.symbol]
+        if not legs:
+            return
+        try:
+            from .executor import build_close_request
+
+            self.trading.submit_order(build_close_request(legs, condor.quantity))
+            return
+        except Exception as exc:  # noqa: BLE001 - fall back to a safe legged close
+            log.warning("close_condor: atomic MLEG close failed (%s) — legging out shorts-first", exc)
+
+        for leg in sorted(legs, key=lambda leg: 0 if leg.action == "sell" else 1):
+            try:
+                self.trading.close_position(leg.symbol)
+            except Exception as exc:  # noqa: BLE001
+                log.error("close_condor: leg %s close failed: %s", leg.symbol, exc)
 
     def flatten_all(self) -> tuple[int, int]:
         """Market-close every open position and cancel every working order.

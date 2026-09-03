@@ -19,7 +19,11 @@ from typing import TYPE_CHECKING
 
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderClass, OrderSide, TimeInForce
-from alpaca.trading.requests import LimitOrderRequest, OptionLegRequest
+from alpaca.trading.requests import (
+    LimitOrderRequest,
+    MarketOrderRequest,
+    OptionLegRequest,
+)
 
 from .alpaca_trader import AlpacaCredentials, load_credentials
 from .risk_manager import AccountState, OrderLeg, ProposedOrder, RiskDecision, check_order
@@ -31,6 +35,45 @@ log = logging.getLogger("executor")
 
 TIME_IN_FORCE = TimeInForce.DAY
 _SIDE = {"buy": OrderSide.BUY, "sell": OrderSide.SELL}
+# Closing a leg reverses its opening side.
+_CLOSE_SIDE = {"buy": OrderSide.SELL, "sell": OrderSide.BUY}
+
+
+def build_close_request(legs, quantity: int) -> MarketOrderRequest:
+    """One reversing MLEG **market** order that flattens a multi-leg position
+    atomically.
+
+    ``legs`` are the position's ORIGINAL opening legs (``risk_manager.OrderLeg``);
+    each side is flipped here (sold-to-open -> buy-to-close, and vice versa) and
+    all of them ride in a single ``OrderClass.MLEG`` submission. That is the
+    whole point: the broker fills or rejects the combo as a unit, so the unwind
+    can never leave one leg done and another open — the transient naked-short
+    state that gets a leg-by-leg close rejected.
+
+    Market, not limit: a forced exit (profit target, stop, expiry, hard-stop
+    flatten) has to actually fill; on a defined-risk structure the worst case is
+    already the known max loss, so there is nothing to protect with a limit.
+    """
+    legs = tuple(legs)
+    if not legs:
+        raise ValueError("cannot build a close order for a position with no legs")
+
+    option_legs = []
+    for leg in legs:
+        if not leg.symbol:
+            raise ValueError(f"leg {leg.action} {leg.right} has no OCC symbol")
+        if leg.action not in _CLOSE_SIDE:
+            raise ValueError(f"leg has invalid action: {leg.action!r}")
+        option_legs.append(
+            OptionLegRequest(symbol=leg.symbol, side=_CLOSE_SIDE[leg.action], ratio_qty=1)
+        )
+
+    return MarketOrderRequest(
+        qty=int(quantity),
+        order_class=OrderClass.MLEG,
+        time_in_force=TIME_IN_FORCE,
+        legs=option_legs,
+    )
 
 
 # --------------------------------------------------------------------------- #

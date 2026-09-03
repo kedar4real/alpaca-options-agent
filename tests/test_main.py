@@ -1613,6 +1613,46 @@ def test_attach_mcp_uses_a_live_session_when_one_connects(monkeypatch) -> None:
     assert conn.mcp.enabled is True
 
 
+def test_close_condor_sends_one_reversing_mleg_market_order() -> None:
+    from alpaca.trading.enums import OrderClass, OrderSide
+
+    sent = []
+    conn = agent.AlpacaConnection.__new__(agent.AlpacaConnection)
+    conn.trading = SimpleNamespace(
+        submit_order=lambda req: sent.append(req),
+        close_position=lambda sym: sent.append(("LEGGED", sym)),
+    )
+    conn.close_condor(tracked(qty=3))
+
+    assert len(sent) == 1, "must be a single atomic submission, never legged"
+    req = sent[0]
+    assert req.order_class == OrderClass.MLEG
+    assert req.type.value == "market"
+    # opening sides sell,buy,sell,buy -> closing sides buy,sell,buy,sell
+    assert [leg.side for leg in req.legs] == [
+        OrderSide.BUY, OrderSide.SELL, OrderSide.BUY, OrderSide.SELL,
+    ]
+
+
+def test_close_condor_falls_back_to_shorts_first_when_the_combo_fails() -> None:
+    calls = []
+    conn = agent.AlpacaConnection.__new__(agent.AlpacaConnection)
+
+    def _boom(_req):
+        raise RuntimeError("combo rejected")
+
+    conn.trading = SimpleNamespace(
+        submit_order=_boom,
+        close_position=lambda sym: calls.append(sym),
+    )
+    conn.close_condor(tracked(qty=3))
+
+    # every short leg closed before any long leg — never transiently naked
+    shorts = {"SPY260904P00760000", "SPY260904C00775000"}
+    longs = {"SPY260904P00755000", "SPY260904C00780000"}
+    assert set(calls[:2]) == shorts and set(calls[2:]) == longs
+
+
 def test_account_snapshot_prefers_mcp_then_degrades(monkeypatch) -> None:
     conn = agent.AlpacaConnection.__new__(agent.AlpacaConnection)
     conn.mcp = SimpleNamespace(account_info=lambda: {"equity": "99450.80",

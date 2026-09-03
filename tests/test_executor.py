@@ -339,3 +339,43 @@ def test_strangle_round_trips_through_submit() -> None:
     res = ex.submit_iron_condor(po, account(), client=fake)
     assert res.submitted is True
     assert len(fake.submitted[0].legs) == 2
+
+
+# ======================================================================= #
+# build_close_request — atomic reversing MLEG to flatten a live position
+# ======================================================================= #
+def test_build_close_request_reverses_every_leg_in_one_mleg_order() -> None:
+    req = ex.build_close_request(CONDOR, 3)
+
+    assert req.order_class == OrderClass.MLEG
+    assert len(req.legs) == 4
+    # opening sides were sell,buy,sell,buy -> closing sides are buy,sell,buy,sell
+    assert [leg.side for leg in req.legs] == [
+        OrderSide.BUY, OrderSide.SELL, OrderSide.BUY, OrderSide.SELL,
+    ]
+    assert [leg.symbol for leg in req.legs] == [PUT_SHORT, PUT_LONG, CALL_SHORT, CALL_LONG]
+    assert req.qty == 3
+
+
+def test_build_close_request_is_a_market_order_for_a_guaranteed_exit() -> None:
+    # A forced close must fill; it is not a limit order that can hang unfilled.
+    req = ex.build_close_request(CONDOR, 3)
+    assert getattr(req, "limit_price", None) is None
+    assert req.type.value == "market"
+
+
+def test_build_close_request_handles_a_two_leg_vertical() -> None:
+    vertical = (OrderLeg("sell", "put", 5, PUT_SHORT), OrderLeg("buy", "put", 5, PUT_LONG))
+    req = ex.build_close_request(vertical, 5)
+    assert len(req.legs) == 2
+    assert [leg.side for leg in req.legs] == [OrderSide.BUY, OrderSide.SELL]
+
+
+def test_build_close_request_rejects_a_legless_position() -> None:
+    with pytest.raises(ValueError):
+        ex.build_close_request((), 3)
+
+
+def test_build_close_request_rejects_a_leg_with_no_symbol() -> None:
+    with pytest.raises(ValueError):
+        ex.build_close_request((OrderLeg("sell", "put", 3, None),), 3)

@@ -164,6 +164,7 @@ class Config:
     self_correction: bool = True                # post_trade_analysis -> lessons_learned.json
     hard_stop_et: str = "2026-09-04 10:30"      # competition hard stop (ET wall clock)
     halt_file: str = "HALT"                     # if this file exists: manage only, no new trades
+    audit_file: str | None = None               # append debate transcripts here (final-session evidence)
     disable_macro_danger: bool = False          # final-session override: suppress the MACRO_DANGER long-vol force
     harvest_mode: bool = False                  # final-session: force bull puts on bullish-sentiment names
     harvest_sentiment_min: float = 0.2          # news score above this -> harvest a bull put
@@ -204,6 +205,7 @@ class Config:
             not in ("0", "false", "no", "off"),
             hard_stop_et=os.environ.get("AGENT_HARD_STOP_ET", "2026-09-04 10:30"),
             halt_file=os.environ.get("AGENT_HALT_FILE", "HALT"),
+            audit_file=os.environ.get("AGENT_AUDIT_FILE") or None,
             disable_macro_danger=os.environ.get("AGENT_DISABLE_MACRO_DANGER", "false")
             .strip().lower() in ("1", "true", "yes", "on"),
             harvest_mode=os.environ.get("AGENT_HARVEST_MODE", "false")
@@ -1346,6 +1348,29 @@ def halt_file_present(path: str = "HALT") -> bool:
         return False
 
 
+def append_audit(path: str, symbol: str, transcript: str, *, decision_line: str, when) -> None:
+    """Append one Bull/Bear/Judge transcript to the final-session audit markdown.
+
+    This is the hackathon submission evidence — the multi-agent debate reasoning
+    for each trade it weighed, kept in a standalone file rather than buried in
+    the activity log. Best-effort; a write failure never touches the cycle.
+    """
+    try:
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        fresh = not p.exists()
+        with p.open("a", encoding="utf-8") as f:
+            if fresh:
+                f.write("# Final Session Audit — Multi-Agent Debate Transcripts\n\n")
+                f.write("Bull / Bear / Judge reasoning for every ticker the agent "
+                        "weighed in the final session. Generated live by the agent.\n\n")
+            f.write(f"## {symbol} — {when:%Y-%m-%d %H:%M} ET\n\n")
+            f.write(f"**Pipeline outcome:** {decision_line}\n\n")
+            f.write("```\n" + transcript.strip() + "\n```\n\n")
+    except OSError as exc:  # noqa: BLE001
+        log.warning("append_audit(%s) failed: %s", path, exc)
+
+
 def hard_stop_reached(now_et: datetime, hard_stop_et: str) -> bool:
     """True once ``now_et`` (an ET-aware datetime) is at or past the configured
     ``"YYYY-MM-DD HH:MM"`` ET wall-clock cutoff. Empty / unparseable config ->
@@ -1579,6 +1604,9 @@ def run_cycle(conn: AlpacaConnection, session: Session, config: Config, *,
         if decision.debate:
             offhours_log.info("DEBATE [%s]\n%s\n%s\n%s", symbol, "=" * 60,
                               decision.debate, "=" * 60)
+            if config.audit_file:
+                append_audit(config.audit_file, symbol, decision.debate,
+                             decision_line=decision.render(), when=now_et)
 
         if decision.outcome == "executed":
             submitted.append(_record_pending(session, decision, now_iso))

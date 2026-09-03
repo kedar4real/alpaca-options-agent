@@ -1651,6 +1651,22 @@ def test_attach_mcp_uses_a_live_session_when_one_connects(monkeypatch) -> None:
     assert conn.mcp.enabled is True
 
 
+def test_append_audit_writes_a_markdown_section_per_debate(tmp_path) -> None:
+    from datetime import datetime
+
+    path = tmp_path / "REPORTS" / "FINAL_SESSION_AUDIT.md"
+    agent.append_audit(str(path), "SPY", "--- BULL ---\nx\n--- JUDGE ---\nAPPROVE",
+                       decision_line="Executed at [executor]", when=datetime(2026, 9, 4, 9, 35))
+    agent.append_audit(str(path), "SPY", "--- JUDGE ---\nVETO",
+                       decision_line="Vetoed at [risk_officer]", when=datetime(2026, 9, 4, 9, 40))
+
+    text = path.read_text(encoding="utf-8")
+    assert text.count("## SPY — 2026-09-04") == 2          # appended, not overwritten
+    assert "# Final Session Audit" in text                 # header written once
+    assert text.count("# Final Session Audit") == 1
+    assert "Executed at [executor]" in text and "Vetoed at [risk_officer]" in text
+
+
 def test_close_condor_sends_one_reversing_mleg_market_order() -> None:
     from alpaca.trading.enums import OrderClass, OrderSide
 

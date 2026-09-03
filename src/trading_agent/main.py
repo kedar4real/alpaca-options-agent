@@ -2060,14 +2060,24 @@ def startup(config: Config) -> tuple[AlpacaConnection, Session]:
 
     # Narrative marker for the submission report: what mode this run is in.
     mode_bits = ["atomic MLEG close (no more leg-by-leg unwinds)"]
+    if config.trade_not_before_et:
+        mode_bits.append(f"new trades gated until {config.trade_not_before_et:%Y-%m-%d %H:%M} ET")
     if config.disable_macro_danger:
         mode_bits.append("MACRO_DANGER override OFF")
     if config.harvest_mode:
+        m = config.harvest_sentiment_min
         mode_bits.append(
-            f"HARVEST bull-put mode ON — sentiment > {config.harvest_sentiment_min} on any "
-            f"basket name ({', '.join(config.tickers)}) forces a "
-            f"{HARVEST_SHORT_DELTA:.2f}-delta / ${HARVEST_SPREAD_WIDTH:.0f}-wide put credit spread"
+            f"HARVEST directional mode ON on {', '.join(config.tickers)} — news score > +{m} "
+            f"forces a bull put, < -{m} a bear call, "
+            f"{HARVEST_SHORT_DELTA:.2f}-delta short / ${HARVEST_SPREAD_WIDTH:.0f}-wide"
         )
+    if config.stop_loss_max_loss_fraction:
+        mode_bits.append(
+            f"exits: TP {config.profit_target_fraction:.0%} of credit / "
+            f"stop {config.stop_loss_max_loss_fraction:.0%} of max loss"
+        )
+    if config.panic_flatten_equity:
+        mode_bits.append(f"panic flatten + halt at ${config.panic_flatten_equity:,.0f} equity")
     offhours_log.info(
         "RUN MODE\n%s\n  hard stop  %s ET\n  %s\n%s",
         "=" * 60, config.hard_stop_et, "\n  ".join(mode_bits), "=" * 60,

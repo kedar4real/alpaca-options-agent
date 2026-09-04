@@ -22,6 +22,32 @@ try:  # package import (pytest / -m) or flat import (`streamlit run`)
 except ImportError:  # pragma: no cover
     import audit_data as ad
 
+# Altair/Vega-Lite ships its own default (light) theme, independent of the
+# Streamlit CSS above — every chart needs it registered explicitly or it
+# renders as a stray white rectangle on the dark canvas.
+def _va_dark_theme() -> dict:
+    return {
+        "config": {
+            "background": "#06030B",
+            "view": {"stroke": "transparent"},
+            "axis": {
+                "domainColor": "#201733",
+                "gridColor": "#1a1428",
+                "tickColor": "#201733",
+                "labelColor": "#8b93a7",
+                "titleColor": "#8b93a7",
+                "labelFont": "JetBrains Mono, monospace",
+                "titleFont": "Inter, sans-serif",
+            },
+            "legend": {"labelColor": "#e8eef6", "titleColor": "#e8eef6"},
+            "title": {"color": "#e8eef6"},
+        }
+    }
+
+
+alt.themes.register("volatility_arbiter_dark", _va_dark_theme)
+alt.themes.enable("volatility_arbiter_dark")
+
 # --------------------------------------------------------------------------- #
 # paths
 # --------------------------------------------------------------------------- #
@@ -60,104 +86,104 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
-    :root { color-scheme: light; }
+    :root { color-scheme: dark; }
 
-    /* --- force a light, high-contrast canvas on every machine ------------- */
+    /* --- dark canvas matching the landing page, forced on every machine --- */
     .stApp,
     [data-testid="stAppViewContainer"],
     [data-testid="stMain"],
-    [data-testid="stHeader"] { background: #f7f8fa !important; }
+    [data-testid="stHeader"] { background: #06030B !important; }
 
-    [data-testid="stSidebar"] { background: #eceff4 !important; }
+    [data-testid="stSidebar"] { background: #0F0B18 !important; border-right: 1px solid #201733; }
     [data-testid="stSidebar"] p,
     [data-testid="stSidebar"] li,
     [data-testid="stSidebar"] label,
     [data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2,
-    [data-testid="stSidebar"] h3, [data-testid="stSidebar"] h4 { color: #2b2f3a !important; }
+    [data-testid="stSidebar"] h3, [data-testid="stSidebar"] h4 { color: #e8eef6 !important; }
 
     /* base font + ink — cascades to spans WITHOUT touching icon-font elements */
     .stApp {
         font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-        color: #2b2f3a;
+        color: #e8eef6;
     }
     .stApp p, .stApp li, .stApp label, .stApp td, .stApp th,
     .stApp h1, .stApp h2, .stApp h3, .stApp h4, .stApp h5,
-    .stMarkdown, [data-testid="stMarkdownContainer"] { color: #2b2f3a; }
+    .stMarkdown, [data-testid="stMarkdownContainer"] { color: #e8eef6; }
     .stApp [data-testid="stCaptionContainer"],
-    .stApp [data-testid="stCaptionContainer"] * { color: #5c6472 !important; }
+    .stApp [data-testid="stCaptionContainer"] * { color: #8b93a7 !important; }
     /* never restyle Streamlit's Material icon glyphs */
     [data-testid="stIconMaterial"], .material-symbols-rounded, span[class*="material"] {
         font-family: 'Material Symbols Rounded', 'Material Symbols Outlined' !important;
     }
 
     code, pre, [data-testid="stMetricValue"] {
-        font-family: 'IBM Plex Mono', ui-monospace, monospace !important;
+        font-family: 'JetBrains Mono', ui-monospace, monospace !important;
     }
-    div[data-testid="stMetricValue"] { font-size: 26px; font-weight: 600; color: #1f2430; }
+    div[data-testid="stMetricValue"] { font-size: 26px; font-weight: 600; color: #f5f7fb; }
     div[data-testid="stMetricLabel"], div[data-testid="stMetricLabel"] * {
-        color: #5c6472 !important; text-transform: uppercase;
+        color: #8b93a7 !important; text-transform: uppercase;
         font-size: 11px; letter-spacing: 0.05em;
     }
 
     /* dataframes / tables */
-    [data-testid="stDataFrame"], [data-testid="stTable"] { background: #ffffff; }
+    [data-testid="stDataFrame"], [data-testid="stTable"] { background: #0F0B18; }
 
-    /* code blocks — light terminal look, dark text */
+    /* code blocks — dark terminal look matching the landing page cards */
     [data-testid="stCode"], .stCodeBlock, pre {
-        background-color: #f0f2f6 !important;
+        background-color: #0F0B18 !important;
         border-radius: 8px !important;
-        border: 1px solid #e0e0e0 !important;
+        border: 1px solid #201733 !important;
     }
-    [data-testid="stCode"] * , .stCodeBlock * { color: #2b2f3a; }
+    [data-testid="stCode"] * , .stCodeBlock * { color: #e8eef6; }
 
-    /* --- slim institutional status bar (always dark, self-contained) ----- */
+    /* --- slim institutional status bar ------------------------------------ */
     .status-bar {
         display: flex; justify-content: space-between; align-items: center;
         gap: 16px; flex-wrap: wrap;
-        background: #1f2430; border: 1px solid #2c3342; border-radius: 8px;
+        background: #0F0B18; border: 1px solid #201733; border-radius: 8px;
         padding: 8px 16px; margin-bottom: 18px;
-        font-family: 'IBM Plex Mono', monospace; font-size: 12.5px; letter-spacing: 0.02em;
+        font-family: 'JetBrains Mono', monospace; font-size: 12.5px; letter-spacing: 0.02em;
     }
-    .status-bar, .status-bar * { color: #e7e9ee !important; }
+    .status-bar, .status-bar * { color: #e8eef6 !important; }
     .status-bar .mid span {
-        background: #2b3342; border: 1px solid #3a4356;
+        background: #17101f; border: 1px solid #2c2340;
         padding: 3px 9px; border-radius: 5px; margin: 0 3px;
     }
-    .status-bar .mid span, .status-bar .mid span * { color: #cfd4de !important; }
-    .status-bar .right, .status-bar .right * { color: #f0b45f !important; font-weight: 600; }
+    .status-bar .mid span, .status-bar .mid span * { color: #b8bfd0 !important; }
+    .status-bar .right, .status-bar .right * { color: #F5A623 !important; font-weight: 600; }
     .status-bar.amber .mid span, .status-bar .amber span,
-    .status-bar.amber .mid span * { color: #f4c27a !important; border-color: #6b5321; background: #33291b; }
+    .status-bar.amber .mid span * { color: #F5A623 !important; border-color: #5a4420; background: #241b0c; }
 
     /* --- invariant cards (the cage) ------------------------------------- */
     .invariant {
-        background: #eef1f6; border: 1px solid #dde2ec; border-left: 3px solid #4a5a80;
+        background: #0F0B18; border: 1px solid #201733; border-left: 3px solid #F5A623;
         border-radius: 6px; padding: 8px 12px; margin-bottom: 8px;
-        font-family: 'IBM Plex Mono', monospace; font-size: 12.5px; color: #2b2f3a;
+        font-family: 'JetBrains Mono', monospace; font-size: 12.5px; color: #e8eef6;
     }
-    .invariant, .invariant b { color: #2b2f3a !important; }
-    .invariant span { color: #5c6472 !important; }
+    .invariant, .invariant b { color: #e8eef6 !important; }
+    .invariant span { color: #8b93a7 !important; }
 
     /* --- chat-message soft cards for the debate ----------------------- */
     [data-testid="stChatMessage"] {
-        background: #ffffff !important; border: 1px solid #e4e7ec;
+        background: #0F0B18 !important; border: 1px solid #201733;
         border-radius: 10px; padding: 10px 14px; margin-bottom: 8px;
     }
     [data-testid="stChatMessage"] p, [data-testid="stChatMessage"] li,
-    [data-testid="stChatMessage"] span:not(.verdict-pill) { color: #2b2f3a; }
+    [data-testid="stChatMessage"] span:not(.verdict-pill) { color: #e8eef6; }
 
     .verdict-pill {
         padding: 2px 10px; border-radius: 999px; font-size: 11px; font-weight: 700;
-        letter-spacing: 0.04em; font-family: 'IBM Plex Mono', monospace;
+        letter-spacing: 0.04em; font-family: 'JetBrains Mono', monospace;
     }
-    .pill-approve { background: #dcecdf !important; color: #2f6b45 !important; border: 1px solid #b6d4c0; }
-    .pill-veto    { background: #f3dcdc !important; color: #963f43 !important; border: 1px solid #e0bebe; }
-    .pill-na      { background: #e6e8ee !important; color: #565f6e !important; border: 1px solid #d3d7df; }
+    .pill-approve { background: rgba(74,222,128,0.12) !important; color: #4ADE80 !important; border: 1px solid rgba(74,222,128,0.35); }
+    .pill-veto    { background: rgba(248,113,113,0.12) !important; color: #F87171 !important; border: 1px solid rgba(248,113,113,0.35); }
+    .pill-na      { background: #17101f !important; color: #8b93a7 !important; border: 1px solid #2c2340; }
 
-    .role-bull  { color: #2f6b45 !important; font-weight: 700; }
-    .role-bear  { color: #963f43 !important; font-weight: 700; }
-    .role-judge { color: #3f4d72 !important; font-weight: 700; }
+    .role-bull  { color: #4ADE80 !important; font-weight: 700; }
+    .role-bear  { color: #F87171 !important; font-weight: 700; }
+    .role-judge { color: #F5A623 !important; font-weight: 700; }
 
     /* de-clutter the top chrome but keep it reachable (Settings -> Theme) */
     [data-testid="stToolbar"] { background: transparent !important; }
@@ -287,16 +313,17 @@ if len(_eq) >= 2:
     eq_chart = (
         alt.Chart(eq_df)
         .mark_line(
-            color="#2f3a5c", strokeWidth=3, interpolate="monotone",
-            point={"size": 170, "color": "#2f3a5c", "filled": True,
-                   "stroke": "#ffffff", "strokeWidth": 1.5},
+            color="#8ea0d8", strokeWidth=3, interpolate="monotone",
+            point={"size": 170, "color": "#8ea0d8", "filled": True,
+                   "stroke": "#06030B", "strokeWidth": 1.5},
         )
         .encode(x=_x, y=_y, tooltip=_tt)
         .properties(height=260)
-        .configure_view(fill="#ffffff", stroke="#e4e7ec")
-        .configure_axis(labelColor="#5c6472", titleColor="#5c6472")
+        .configure_view(fill="#0F0B18", stroke="#201733")
+        .configure_axis(labelColor="#8b93a7", titleColor="#8b93a7",
+                         gridColor="#1a1428", domainColor="#201733", tickColor="#201733")
     )
-    st.altair_chart(eq_chart, width="stretch")
+    st.altair_chart(eq_chart, width="stretch", theme=None)
     st.caption(
         "Points labelled **· close** are the agent's own end-of-day **DAILY PERFORMANCE "
         "SUMMARY** equity marks from `logs/agent.log` — directly logged, not reconstructed "
@@ -327,17 +354,17 @@ with st.sidebar:
     st.markdown("#### Safety Invariants — the cage")
     st.markdown(
         f'<div class="invariant">HARD FLOOR&nbsp;&nbsp;&nbsp;&nbsp;${ad.SAFETY_FLOOR_USD:,.0f} equity'
-        f'<br><span style="color:#667085">→ panic-flatten + sticky halt below this line</span></div>',
+        f'<br><span style="color:#8b93a7">→ panic-flatten + sticky halt below this line</span></div>',
         unsafe_allow_html=True,
     )
     st.markdown(
         f'<div class="invariant">PER-TRADE CAP&nbsp;&nbsp;{ad.PER_TRADE_CAP_PCT:.1f}% of live equity'
-        f'<br><span style="color:#667085">→ max defined loss, re-checked at submit</span></div>',
+        f'<br><span style="color:#8b93a7">→ max defined loss, re-checked at submit</span></div>',
         unsafe_allow_html=True,
     )
     st.markdown(
         '<div class="invariant">DEFINED RISK ONLY<br>'
-        '<span style="color:#667085">→ verticals / condors — never a naked leg</span></div>',
+        '<span style="color:#8b93a7">→ verticals / condors — never a naked leg</span></div>',
         unsafe_allow_html=True,
     )
 
@@ -369,7 +396,7 @@ with col1:
             {"tenor": ["VIX · 1M", "VXV · 3M"], "vol": [ctx["vix"], ctx["vxv"]], "order": [0, 1]}
         )
         inverted = ctx["vix"] > ctx["vxv"]
-        line_color = "#cf9b4a" if inverted else "#4a5a80"
+        line_color = "#F5A623" if inverted else "#8ea0d8"
         chart = (
             alt.Chart(ts_df)
             .mark_line(point=alt.OverlayMarkDef(size=90, filled=True), strokeWidth=2.5, color=line_color)
@@ -382,11 +409,12 @@ with col1:
             )
             .properties(height=190)
         )
-        bg = "#fbf3e4" if inverted else "#ffffff"
-        chart = chart.configure_view(fill=bg, stroke="#e4e7ec").configure_axis(
-            labelColor="#667085", titleColor="#667085"
+        bg = "#241b0c" if inverted else "#0F0B18"
+        chart = chart.configure_view(fill=bg, stroke="#201733").configure_axis(
+            labelColor="#8b93a7", titleColor="#8b93a7",
+            gridColor="#1a1428", domainColor="#201733", tickColor="#201733",
         )
-        st.altair_chart(chart, width='stretch')
+        st.altair_chart(chart, width='stretch', theme=None)
         state_txt = (
             "⚠️ **INVERSION / BACKWARDATION** — short-dated vol bid over long-dated. "
             "Panic-regime signal: short-volatility structures are vetoed."
@@ -462,7 +490,7 @@ with col2:
                         else f'<span class="verdict-pill pill-veto">VETO</span>' if v == "VETO"
                         else '<span class="verdict-pill pill-na">NO VERDICT</span>'
                     )
-                    prov = f' <span style="color:#98a2b3">({r["provider"]})</span>' if r["provider"] else ""
+                    prov = f' <span style="color:#8b93a7">({r["provider"]})</span>' if r["provider"] else ""
                     st.markdown(
                         f'<span class="{_ROLECLS.get(r["role"], "")}">{r["role"]}</span>{prov} &nbsp; {pill}',
                         unsafe_allow_html=True,
@@ -495,8 +523,8 @@ with col3:
                         "Realized P&L", "Officer ✓", "Active span"]
         st.dataframe(
             show.style.format({"Realized P&L": "${:+,.0f}"}).map(
-                lambda v: "color:#2f6b45" if isinstance(v, (int, float)) and v > 0
-                else ("color:#963f43" if isinstance(v, (int, float)) and v < 0 else None),
+                lambda v: "color:#4ADE80" if isinstance(v, (int, float)) and v > 0
+                else ("color:#F87171" if isinstance(v, (int, float)) and v < 0 else None),
                 subset=["Realized P&L"]),
             hide_index=True, width="stretch",
         )
@@ -546,9 +574,9 @@ with dl1:
 with dl2:
     if _v:
         st.markdown(
-            f"<div style='text-align:right;color:#5c6472;font-size:13px;padding-top:10px'>"
+            f"<div style='text-align:right;color:#8b93a7;font-size:13px;padding-top:10px'>"
             f"{_v.get('scans','?')} scans → {_v.get('proposed','?')} proposed →<br>"
-            f"<b style='color:#3f4d72'>{_v.get('gate_vetoes','?')} killed by the gate</b> · "
+            f"<b style='color:#8ea0d8'>{_v.get('gate_vetoes','?')} killed by the gate</b> · "
             f"{_v.get('ai_vetoes','?')} vetoed by the AI · {_v.get('approved','?')} approved</div>",
             unsafe_allow_html=True,
         )
@@ -606,7 +634,7 @@ if _caged:
     cc2.metric("Peak cap utilisation", f"{_peak:.1f}%",
                help="Highest order_risk ÷ max_risk_allowed across every filled trade. Never ≥ 100%.")
     cc3.markdown(
-        "<div style='padding-top:6px;color:#5c6472;font-size:13px'>"
+        "<div style='padding-top:6px;color:#8b93a7;font-size:13px'>"
         "Each bar is one filled trade's <b>defined max loss</b> (<code>order_risk</code>) as a "
         "percent of the <b>cap</b> in force at submit time (<code>max_risk_allowed</code> = "
         f"{ad.PER_TRADE_CAP_PCT:.1f}% of live equity, halved under a macro-danger flag). "
@@ -615,7 +643,7 @@ if _caged:
     )
 
     _rule = alt.Chart(pd.DataFrame({"y": [100]})).mark_rule(
-        color="#a5474a", strokeDash=[5, 4], strokeWidth=1.5).encode(y="y:Q")
+        color="#F87171", strokeDash=[5, 4], strokeWidth=1.5).encode(y="y:Q")
     _bars = (
         alt.Chart(_cg)
         .mark_bar()
@@ -634,10 +662,11 @@ if _caged:
     )
     cage_chart = (
         (_bars + _rule).properties(height=230)
-        .configure_view(fill="#ffffff", stroke="#e4e7ec")
-        .configure_axis(labelColor="#5c6472", titleColor="#5c6472")
+        .configure_view(fill="#0F0B18", stroke="#201733")
+        .configure_axis(labelColor="#8b93a7", titleColor="#8b93a7",
+                         gridColor="#1a1428", domainColor="#201733", tickColor="#201733")
     )
-    st.altair_chart(cage_chart, width="stretch")
+    st.altair_chart(cage_chart, width="stretch", theme=None)
     st.caption(
         f"{len(_cg)} filled trades carrying a recorded risk-gate check "
         "(`session.json` `history` → `gates`). Ordered oldest → newest, left to right. "
@@ -673,16 +702,17 @@ with gcol:
                 color=alt.Color(
                     "kind:N",
                     scale=alt.Scale(domain=["gate", "ai", "exec"],
-                                    range=["#4a5a80", "#cf9b4a", "#5b8c6e"]),
+                                    range=["#8ea0d8", "#F5A623", "#4ADE80"]),
                     legend=None,
                 ),
                 tooltip=["stage", "count"],
             )
             .properties(height=170)
-            .configure_view(stroke="#e4e7ec")
-            .configure_axis(labelColor="#667085", titleColor="#667085")
+            .configure_view(fill="#0F0B18", stroke="#201733")
+            .configure_axis(labelColor="#8b93a7", titleColor="#8b93a7",
+                             gridColor="#1a1428", domainColor="#201733", tickColor="#201733")
         )
-        st.altair_chart(bar, width='stretch')
+        st.altair_chart(bar, width='stretch', theme=None)
         st.caption(
             f"Of **{v.get('proposed','?')}** structures the strategy proposed, the deterministic "
             f"risk gate killed **{v.get('gate_vetoes','?')}** before any LLM was consulted. "

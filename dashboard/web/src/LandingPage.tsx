@@ -20,7 +20,8 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 const DASHBOARD_URL = "https://alpaca-options-agent-ulckr2ugynvqnerbdwohb2.streamlit.app/";
 const GITHUB_URL = "https://github.com/kedar4real/alpaca-options-agent";
 const WRITEUP_URL = "https://github.com/kedar4real/alpaca-options-agent#readme";
-const VIDEO_URL = "#";
+// VIDEO_URL intentionally removed — no working video yet. Re-add
+// `const VIDEO_URL = "..."` plus its LINKS card below once one's live.
 
 const SIGNAL = "#F5A623"; // the one accent — "signal" amber, used everywhere
 
@@ -142,12 +143,7 @@ const LINKS: LinkCard[] = [
     href: WRITEUP_URL,
     cta: "Read write-up",
   },
-  {
-    title: "Video Walkthrough",
-    desc: "Five minutes end to end: a scan, a Bull/Bear/Judge debate, a gate rejection, and a fill landing on the book.",
-    href: VIDEO_URL,
-    cta: "Watch",
-  },
+  // Video Walkthrough card intentionally omitted — no working video yet.
 ];
 
 /* --------------------------------------------------------------- primitives - */

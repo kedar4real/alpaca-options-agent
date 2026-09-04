@@ -26,9 +26,8 @@ Over the final competition session it evaluated 165 trade proposals, executed 40
 | **Audit dashboard** (read-only, live evidence) | https://alpaca-options-agent-ulckr2ugynvqnerbdwohb2.streamlit.app/ |
 | **GitHub repo** | https://github.com/kedar4real/alpaca-options-agent |
 | **Write-up** | this README |
-| **Video walkthrough** | *not yet live* — placeholder |
 
-The video link is genuinely not resolving yet (404), not an oversight — flagging rather than guessing a URL.
+No video link yet — the Video Walkthrough card is intentionally left out of the landing page rather than pointing at a link that doesn't resolve. Will be added back once one's live.
 
 ---
 

@@ -115,12 +115,8 @@ const LINKS = [
     href: WRITEUP_URL,
     cta: "Read write-up",
   },
-  {
-    title: "Video Walkthrough",
-    desc: "Five minutes end to end: a scan, a Bull/Bear/Judge debate, a gate rejection, and a fill landing on the book.",
-    href: VIDEO_URL,
-    cta: "Watch",
-  },
+  // Video Walkthrough card intentionally omitted — no working video yet.
+  // Add it back (title/desc/href: VIDEO_URL/cta) once one's live.
 ];
 
 /* --------------------------------------------------------------- primitives - */

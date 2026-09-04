@@ -643,3 +643,36 @@ def trade_history_grouped(session: dict) -> list[dict]:
             g["cancelled"] += 1
 
     return sorted(groups.values(), key=lambda r: r["last"] or "")
+
+
+# --------------------------------------------------------------------------- #
+# Debate alignment summary  (polish pass — NEW, additive)
+# --------------------------------------------------------------------------- #
+def debate_agreement(debates: list[dict]) -> dict:
+    """Bull / Bear / Judge alignment across :func:`parse_debates` output.
+
+    Only debates with a JUDGE verdict count toward ``n``. ``split`` is where
+    Bull and Bear disagreed; ``judge_with_bear`` / ``judge_with_bull`` say which
+    side the Judge took on those. ``{n, judge_veto, judge_approve, split,
+    judge_with_bear, judge_with_bull, both_veto, both_approve}``.
+    """
+    out = {"n": 0, "judge_veto": 0, "judge_approve": 0, "split": 0,
+           "judge_with_bear": 0, "judge_with_bull": 0, "both_veto": 0, "both_approve": 0}
+    for d in debates:
+        rv = {r.get("role"): r.get("verdict") for r in d.get("rounds", []) if r.get("verdict")}
+        bull, bear, judge = rv.get("BULL"), rv.get("BEAR"), rv.get("JUDGE")
+        if not judge:
+            continue
+        out["n"] += 1
+        out["judge_veto" if judge == "VETO" else "judge_approve"] += 1
+        if bull and bear and bull != bear:
+            out["split"] += 1
+            if judge == bear:
+                out["judge_with_bear"] += 1
+            elif judge == bull:
+                out["judge_with_bull"] += 1
+        if bull == bear == "VETO":
+            out["both_veto"] += 1
+        elif bull == bear == "APPROVE":
+            out["both_approve"] += 1
+    return out

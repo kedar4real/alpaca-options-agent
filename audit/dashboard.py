@@ -415,38 +415,54 @@ with col2:
     debates = D["debates"]
     st.markdown(f"**Multi-Agent Debate** &nbsp;·&nbsp; {len(debates)} transcript(s) on file")
     if debates:
-        labels = [
-            f"{i+1:>2}. {d['symbol']}  ·  {d['when']}  ·  {d['outcome'].upper()}"
-            for i, d in enumerate(debates)
-        ]
-        default_idx = next(
-            (i for i, d in reversed(list(enumerate(debates))) if d["outcome"] == "vetoed"),
-            len(debates) - 1,
-        )
-        pick = st.selectbox("Transcript", options=range(len(debates)),
-                            format_func=lambda i: labels[i], index=default_idx)
-        d = debates[pick]
-        if d.get("pipeline"):
-            st.caption(f"Pipeline outcome — {d['pipeline']}")
+        ag = ad.debate_agreement(debates)
+        if ag["n"]:
+            _wb = f"{ag['judge_with_bear']}/{ag['split']}" if ag["split"] else "0/0"
+            st.caption(
+                f"Across {ag['n']} judged debates the Judge returned **VETO {ag['judge_veto']}** / "
+                f"APPROVE {ag['judge_approve']}. When Bull and Bear split ({ag['split']}×), the "
+                f"Judge sided with the **cautious Bear {_wb}** of the time. "
+                f"Unanimous: {ag['both_veto']} veto, {ag['both_approve']} approve."
+            )
 
-        _AVA = {"BULL": "🐂", "BEAR": "🐻", "JUDGE": "⚖️"}
-        _ROLECLS = {"BULL": "role-bull", "BEAR": "role-bear", "JUDGE": "role-judge"}
-        if not d["rounds"]:
-            st.warning("Transcript on file is empty or corrupt (LLM returned no parseable text).")
-        for r in d["rounds"]:
-            with st.chat_message(r["role"].lower(), avatar=_AVA.get(r["role"], "•")):
-                v = r["verdict"]
-                pill = (
-                    f'<span class="verdict-pill pill-approve">APPROVE</span>' if v == "APPROVE"
-                    else f'<span class="verdict-pill pill-veto">VETO</span>' if v == "VETO"
-                    else '<span class="verdict-pill pill-na">NO VERDICT</span>'
-                )
-                prov = f' <span style="color:#98a2b3">({r["provider"]})</span>' if r["provider"] else ""
-                st.markdown(
-                    f'<span class="{_ROLECLS.get(r["role"], "")}">{r["role"]}</span>{prov} &nbsp; {pill}',
-                    unsafe_allow_html=True,
-                )
-                st.markdown(r["thesis"] or "_(no thesis text)_")
+        _counts = {o: sum(1 for d in debates if d["outcome"] == o)
+                   for o in ("vetoed", "executed", "blocked", "debated")}
+        _fopts = ["all"] + [o for o in ("vetoed", "executed", "blocked", "debated") if _counts[o]]
+        _ff = lambda o: f"all · {len(debates)}" if o == "all" else f"{o} · {_counts.get(o, 0)}"
+        _flt = st.segmented_control("Filter transcripts", _fopts, format_func=_ff,
+                                    default="all", key="dbt_filter") or "all"
+        _view = debates if _flt == "all" else [d for d in debates if d["outcome"] == _flt]
+
+        if not _view:
+            st.info(f"No `{_flt}` transcripts.")
+        else:
+            labels = [f"{d['symbol']}  ·  {d['when']}  ·  {d['outcome'].upper()}" for d in _view]
+            default_idx = next((i for i in range(len(_view) - 1, -1, -1)
+                                if _view[i]["outcome"] == "vetoed"), len(_view) - 1)
+            pick = st.selectbox("Transcript", options=range(len(_view)),
+                                format_func=lambda i: labels[i], index=default_idx)
+            d = _view[pick]
+            if d.get("pipeline"):
+                st.caption(f"Pipeline outcome — {d['pipeline']}")
+
+            _AVA = {"BULL": "🐂", "BEAR": "🐻", "JUDGE": "⚖️"}
+            _ROLECLS = {"BULL": "role-bull", "BEAR": "role-bear", "JUDGE": "role-judge"}
+            if not d["rounds"]:
+                st.warning("Transcript on file is empty or corrupt (LLM returned no parseable text).")
+            for r in d["rounds"]:
+                with st.chat_message(r["role"].lower(), avatar=_AVA.get(r["role"], "•")):
+                    v = r["verdict"]
+                    pill = (
+                        f'<span class="verdict-pill pill-approve">APPROVE</span>' if v == "APPROVE"
+                        else f'<span class="verdict-pill pill-veto">VETO</span>' if v == "VETO"
+                        else '<span class="verdict-pill pill-na">NO VERDICT</span>'
+                    )
+                    prov = f' <span style="color:#98a2b3">({r["provider"]})</span>' if r["provider"] else ""
+                    st.markdown(
+                        f'<span class="{_ROLECLS.get(r["role"], "")}">{r["role"]}</span>{prov} &nbsp; {pill}',
+                        unsafe_allow_html=True,
+                    )
+                    st.markdown(r["thesis"] or "_(no thesis text)_")
     else:
         st.info("No Bull/Bear/Judge transcripts found.")
 

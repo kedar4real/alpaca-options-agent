@@ -469,3 +469,46 @@ def test_trade_history_grouped_sorted_oldest_last_activity_first() -> None:
 
 def test_trade_history_grouped_empty_session() -> None:
     assert ad.trade_history_grouped({}) == []
+
+
+# =========================================================================== #
+# Polish pass — debate_agreement (Bull/Bear/Judge alignment summary)
+# =========================================================================== #
+def _dbt(sym, b, be, j):
+    return {"symbol": sym, "when": "x", "outcome": "vetoed" if j == "VETO" else "executed",
+            "pipeline": "", "rounds": [
+                {"role": "BULL", "provider": None, "verdict": b, "thesis": ""},
+                {"role": "BEAR", "provider": None, "verdict": be, "thesis": ""},
+                {"role": "JUDGE", "provider": "featherless", "verdict": j, "thesis": ""}]}
+
+
+def test_debate_agreement_tallies_judge_alignment() -> None:
+    debates = [
+        _dbt("QQQ", "APPROVE", "VETO", "VETO"),    # split -> judge with bear
+        _dbt("SPY", "APPROVE", "APPROVE", "APPROVE"),  # both approve, judge approve
+        _dbt("IWM", "APPROVE", "VETO", "APPROVE"),  # split -> judge with bull
+        _dbt("DIA", "VETO", "VETO", "VETO"),       # both veto
+    ]
+    a = ad.debate_agreement(debates)
+    assert a["n"] == 4
+    assert a["judge_veto"] == 2 and a["judge_approve"] == 2
+    assert a["split"] == 2
+    assert a["judge_with_bear"] == 1 and a["judge_with_bull"] == 1
+    assert a["both_veto"] == 1 and a["both_approve"] == 1
+
+
+def test_debate_agreement_skips_debates_without_a_judge_verdict() -> None:
+    debates = [
+        {"symbol": "X", "rounds": [{"role": "BULL", "verdict": "APPROVE", "provider": None,
+                                    "thesis": ""}]},                       # no judge
+        {"symbol": "Y", "rounds": []},                                     # corrupt
+        _dbt("Z", "APPROVE", "VETO", "VETO"),
+    ]
+    a = ad.debate_agreement(debates)
+    assert a["n"] == 1
+    assert a["judge_with_bear"] == 1
+
+
+def test_debate_agreement_empty() -> None:
+    a = ad.debate_agreement([])
+    assert a["n"] == 0 and a["split"] == 0

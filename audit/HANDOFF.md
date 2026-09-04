@@ -31,9 +31,9 @@ The "Emergency Flatten" button is permanently `disabled=True`.
 
 ```
 audit/
-  dashboard.py            Streamlit app  (presentation only; ~330 lines)
+  dashboard.py            Streamlit app  (presentation only; ~570 lines)
   audit_data.py           Pure parsers   (no Streamlit, no network; fully tested)
-  tests/test_audit_data.py 20 unit tests
+  tests/test_audit_data.py 36 unit tests
   requirements.txt        streamlit, altair, pandas   (pandas already a core dep)
   README.md               how to run
   HANDOFF.md              this file
@@ -188,18 +188,50 @@ open_positions_detail(session) -> list[dict]
     # {symbol, structure, expiry, qty, entry_credit, peak_gain_fraction, legs[]}
 
 latest_run_mode(activity_text) -> list[str]   # bullet lines of the last RUN MODE
+
+# ---- added in the polish pass (all additive, all reading logs/agent.log) ----
+daily_equity_marks(agent_log_text) -> list[dict]
+    # {date:"YYYY-MM-DD", equity, day_pnl, source:"logged"} from DAILY PERFORMANCE SUMMARY
+
+equity_series(agent_log_text, session, snapshot) -> list[dict]
+    # start anchor + logged marks + snapshot anchor; each point tagged
+    # source: "start"|"logged"|"snapshot". Marks before session.created_at dropped.
+
+decision_log(agent_log_text, *, stage=None, limit=40) -> list[dict]   # newest first
+    # {ts, symbol|None, outcome, stage, reason}  — untruncated DECISION SUMMARY text
+decision_log_stage_counts(agent_log_text) -> dict   # {stage: count} across all lines
+
+trade_history_grouped(session) -> list[dict]   # sorted by last-activity ascending
+    # one row per (symbol, structure): {submitted, opened, closed, cancelled, qty,
+    #   first, last, credit_lo, credit_hi, realized_pnl, closes_with_pnl,
+    #   officer_ok, officer_seen}   — realized_pnl sums closed.pnl
+
+debate_agreement(debates) -> dict          # over parse_debates() output
+    # {n, judge_veto, judge_approve, split, judge_with_bear, judge_with_bull,
+    #  both_veto, both_approve}
 ```
 
 These functions are **pure** — string/dict in, plain data out. Keep them that
-way; that's why the whole surface is unit-tested and the Streamlit file has zero
-logic worth testing.
+way; that's why the whole surface is unit-tested (36 tests) and the Streamlit
+file has zero logic worth testing. `logs/agent.log` is now a data source too
+(equity marks + full decision reasons); `agent_activity.log` stays the source
+for market context, debates, scan table, and the nightly post-mortem.
 
 ---
 
 ## 5. Current UI layout (top → bottom)
 
 Verified via headless render. Light theme, `layout="wide"`, IBM Plex Mono for
-numerics / Inter for prose.
+numerics / Inter for prose. Single-page scroll (no tabs — kept for the judge
+"one skim" review).
+
+Post-polish order: **status bar → equity curve + 4-metric strip → 3 columns
+(Market Context / The Logic / The Evidence) → full-width Decision Log → cage
+compliance → Gate-is-the-Hero funnel + regime mix → Incident Response diff →
+Data provenance & disclosures.** The blocks below describe the columns as they
+were; the Decision Log now lives full-width between the columns and the cage
+strip, and the disclosures are consolidated into the final section (the inline
+log-local-time captions stay in place).
 
 ### Status bar (custom HTML, always dark)
 `THE VOLATILITY ARBITER · v1.0 · session PA3FCNG4S7EO · Sep 1–4 2026`
@@ -319,22 +351,27 @@ snapshot footnote (honest disclosure, see §7).
 
 ## 8. Improvement backlog (rough priority order)
 
-**High value, low risk**
-* **Equity curve.** No time series today. Options: parse `HEARTBEAT` lines,
-  pull `alpaca` `get_portfolio_history` into a second snapshot file, or read the
-  existing `dashboard/server` FastAPI reader (there's a parallel React dashboard
-  at `dashboard/` with `readers.py` + `live.py` already doing equity curves).
-* **Full-text Decision Log** from `logs/agent.log` `DECISION SUMMARY` lines
-  instead of the truncated SCAN TABLE. Add a `stage` filter (precheck / strategy
-  / risk_manager / risk_officer).
-* **Debate filter + counts** — toggle veto-only / executed-only; show a
-  `BULL/BEAR/JUDGE` agreement matrix (how often the Judge overruled the Bear).
-* **Collapse the churn** in Trade History — group by `(symbol, structure,
-  strikes)`, show count + first/last timestamp + realized P&L, with an
-  "expand raw" toggle.
-* **Cage-compliance strip** — one horizontal bar per trade: `order_risk` vs
-  `max_risk_allowed`, all visibly under the line. Strong visual for the "1.5%
-  cap held every time" claim.
+**DONE in the polish pass** (commits `ab170aa`, `0c78084`, `326f5bc`, `6c208b2`,
+`3cc9e35`, `8df0fef`):
+* ~~Equity curve~~ — `equity_series()` from `logs/agent.log` DAILY PERFORMANCE
+  SUMMARY marks (directly logged); Altair line, top of page.
+* ~~Full-text Decision Log~~ — `decision_log()` + `st.segmented_control` stage
+  filter, now a full-width section.
+* ~~Cage-compliance strip~~ — utilisation bars vs a 100% cap line.
+* ~~Collapse the churn~~ — `trade_history_grouped()` + "Expand raw" expander.
+* ~~Debate filter + agreement~~ — `debate_agreement()` + outcome filter.
+
+**Still open — high value, low risk**
+* **Equity curve resolution.** Only 4 daily marks exist. For an intraday curve,
+  snapshot `alpaca` `get_portfolio_history` into a series file, or mine the
+  parallel React dashboard's `dashboard/server/readers.py` / `live.py`.
+* **Layered-Altair height bug.** `alt.layer(...)` / `alt.Chart` with certain
+  axis opts (`nice=False`, `gridColor`, `domain=False`) collapses to ~0 plot
+  height in this Streamlit build — the equity chart hit this. Working formula:
+  single mark, `mark_line` (not `mark_area`, which forces a zero baseline),
+  `scale=alt.Scale(zero=False, domain=[...])`, plain axes, `.properties(height=N)`,
+  `.configure_view(...)`, `st.altair_chart(..., width="stretch")`. The
+  cage-compliance chart layers a `mark_rule` fine, so it's the axis-opt combo.
 
 **Medium**
 * **Multi-session support** — day picker feeding `veto_ratio` /

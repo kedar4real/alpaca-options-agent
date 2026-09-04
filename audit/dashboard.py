@@ -195,7 +195,7 @@ def load_all(_sig: tuple[float, ...]) -> dict:
         "context": ad.last_market_context(activity),
         "tickers": ad.ticker_metrics(activity, BASKET),
         "debates": ad.parse_debates(audit_md=audit_md, activity_text=activity),
-        "no_trade": ad.no_trade_decisions(activity, limit=20),
+        "decision_counts": ad.decision_log_stage_counts(agent_log),
         "veto": ad.veto_ratio(activity),
         "regimes": ad.regime_breakdown(activity),
         "trades": ad.trade_history(session),
@@ -450,17 +450,31 @@ with col2:
         st.info("No Bull/Bear/Judge transcripts found.")
 
     st.divider()
-    st.markdown("**Decision Log — the last 20 times the agent said _No_**")
-    nt = D["no_trade"]
-    if nt:
-        nt_df = pd.DataFrame(nt)[["symbol", "decision", "stage", "iv", "rv", "ivrv", "er", "reason"]]
-        nt_df.columns = ["Sym", "Call", "Stage", "IV", "RV", "IV-RV", "ER", "Reason"]
+    _dc = D["decision_counts"]
+    _dc_total = sum(_dc.values())
+    st.markdown(f"**Decision Log** &nbsp;·&nbsp; {_dc_total:,} pipeline decisions, full reasons")
+    _stage_opts = ["all"] + [s for s in
+                             ("precheck", "strategy", "risk_manager", "risk_officer", "executor")
+                             if _dc.get(s)]
+    _fmt = (lambda s: f"all · {_dc_total:,}" if s == "all" else f"{s} · {_dc.get(s, 0):,}")
+    _pick = st.segmented_control("Pipeline stage", _stage_opts, format_func=_fmt,
+                                 default="all", key="dlog_stage") or "all"
+    _rows = ad.decision_log(D["agent_log"], stage=None if _pick == "all" else _pick, limit=40)
+    if _rows:
+        dl_df = pd.DataFrame(_rows)[["ts", "symbol", "outcome", "stage", "reason"]]
+        dl_df["ts"] = dl_df["ts"].str.slice(0, 16)
+        dl_df.columns = ["When (log-local)", "Sym", "Call", "Stage", "Reason (full)"]
         st.dataframe(
-            nt_df.style.format({"IV": "{:.3f}", "RV": "{:.3f}", "IV-RV": "{:+.3f}", "ER": "{:.2f}"}),
-            hide_index=True, width='stretch', height=340,
+            dl_df, hide_index=True, width="stretch", height=340,
+            column_config={"Reason (full)": st.column_config.TextColumn(width="large")},
+        )
+        st.caption(
+            "Full `DECISION SUMMARY` text from `logs/agent.log` — untruncated, newest first "
+            "(the SCAN TABLE in `agent_activity.log` clips these at ~72 chars). "
+            "`When` is log-local time (IST; ET = IST − 9:30)."
         )
     else:
-        st.info("No SCAN TABLE decisions found in the activity log.")
+        st.info("No DECISION SUMMARY lines found in logs/agent.log.")
     v = D["veto"]
     if v:
         approved = v.get("approved") or 0

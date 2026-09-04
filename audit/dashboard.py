@@ -25,12 +25,23 @@ except ImportError:  # pragma: no cover
 # --------------------------------------------------------------------------- #
 # paths
 # --------------------------------------------------------------------------- #
+# `session.json` and `logs/` are gitignored runtime state, so a hosted deploy
+# (Streamlit Cloud) never sees them. `audit/data/` holds a committed, frozen
+# copy of the exact evidence for this session; the live repo-root files win
+# whenever they exist, so local runs are always current.
 ROOT = Path(os.environ.get("AUDIT_ROOT", Path(__file__).resolve().parent.parent))
-SESSION_PATH = ROOT / "session.json"
-ACTIVITY_PATH = ROOT / "logs" / "agent_activity.log"
-AGENT_LOG_PATH = ROOT / "logs" / "agent.log"
-AUDIT_MD_PATH = ROOT / "REPORTS" / "FINAL_SESSION_AUDIT.md"
-SNAPSHOT_PATH = ROOT / "REPORTS" / "audit_snapshot.json"
+_FROZEN = Path(__file__).resolve().parent / "data"
+
+
+def _resolve(primary: Path, frozen_name: str) -> Path:
+    return primary if primary.exists() else (_FROZEN / frozen_name)
+
+
+SESSION_PATH = _resolve(ROOT / "session.json", "session.json")
+ACTIVITY_PATH = _resolve(ROOT / "logs" / "agent_activity.log", "agent_activity.log")
+AGENT_LOG_PATH = _resolve(ROOT / "logs" / "agent.log", "agent.log")
+AUDIT_MD_PATH = _resolve(ROOT / "REPORTS" / "FINAL_SESSION_AUDIT.md", "FINAL_SESSION_AUDIT.md")
+SNAPSHOT_PATH = _resolve(ROOT / "REPORTS" / "audit_snapshot.json", "audit_snapshot.json")
 JOURNAL_PATH = ROOT / "journal.md"
 
 BASKET = ("SPY", "QQQ", "IWM")

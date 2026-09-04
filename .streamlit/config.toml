@@ -1,12 +1,11 @@
-# Audit dashboard (audit/dashboard.py) — pin a light, high-contrast theme so the
-# page reads the same on every machine regardless of the viewer's OS/browser
-# dark-mode preference.
+# Audit dashboard (audit/dashboard.py) — dark theme matching the landing page.
+# Consistent visual identity across both the landing page and the evidence viewer.
 [theme]
-base = "light"
-primaryColor = "#4a5a80"
-backgroundColor = "#f7f8fa"
-secondaryBackgroundColor = "#ffffff"
-textColor = "#2b2f3a"
+base = "dark"
+primaryColor = "#F5A623"
+backgroundColor = "#06030B"
+secondaryBackgroundColor = "#0F0B18"
+textColor = "#e8eef6"
 font = "sans serif"
 
 [client]

@@ -8,12 +8,17 @@ wheels/
 
 # Virtual environments
 .venv
-
-.env
 .venv/
 
+# Secrets
 .env
-.venv/
+
+# Logs (agent logs live in logs/; stray *.log files e.g. the dashboard API)
+*.log
+
+# Node / web dashboard build artefacts
+node_modules/
+dist/
 
 # Agent runtime state (main.py)
 session.json
@@ -31,3 +36,12 @@ HALT
 HALT.*
 journal.md
 journal.csv
+
+# Frozen evidence bundle for the hosted audit dashboard — committed on purpose.
+# (Overrides session.json / *.log / logs/ ignores above, for this path only.)
+!audit/data/
+!audit/data/session.json
+!audit/data/agent.log
+!audit/data/agent_activity.log
+!audit/data/FINAL_SESSION_AUDIT.md
+!audit/data/audit_snapshot.json

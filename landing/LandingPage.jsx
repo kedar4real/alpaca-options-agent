@@ -15,7 +15,7 @@ import React, { useEffect, useRef, useState } from "react";
 
 /* ------------------------------------------------------------------ config -- */
 
-const DASHBOARD_URL = "http://localhost:8501";
+const DASHBOARD_URL = "https://alpaca-options-agent-ulckr2ugynvqnerbdwohb2.streamlit.app/";
 const GITHUB_URL = "https://github.com/kedar4real/alpaca-options-agent";
 const WRITEUP_URL = "https://github.com/kedar4real/alpaca-options-agent#readme";
 const VIDEO_URL = "#";

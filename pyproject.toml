@@ -23,6 +23,12 @@ dependencies = [
 dev = [
     "pytest>=8.0",
 ]
+# Post-competition audit dashboard (audit/dashboard.py). Not needed to run the
+# agent.  Install with:  uv pip install -r audit/requirements.txt
+audit = [
+    "streamlit>=1.40",
+    "altair>=5.4",
+]
 
 [project.scripts]
 trading-agent = "trading_agent:main"

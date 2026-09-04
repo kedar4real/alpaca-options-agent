@@ -1,0 +1,5 @@
+# Post-competition audit dashboard — extra deps on top of the agent's venv.
+# Install into the project venv:  uv pip install -r audit/requirements.txt
+streamlit>=1.40
+altair>=5.4
+pandas>=2.2

@@ -1,0 +1,297 @@
+"""Offline tests for the audit-dashboard parsers (no Streamlit, no network)."""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from audit import audit_data as ad
+
+# --------------------------------------------------------------------------- #
+# fixtures
+# --------------------------------------------------------------------------- #
+ACTIVITY = """\
+2026-09-02 19:18:25 INFO    agent.offhours: MARKET CONTEXT
+============================================================
+Macro: Employment Situation (NFP) (2026-09-04) | VIX: VIX 16.04 / VXV 18.26 (ratio 0.88, contango) | REGIME SIGNALS: MACRO_DANGER | News SPY: something | RSI SPY: 54.3 (neutral) | ADX SPY: 12.9 (range, down) | News QQQ: x | RSI QQQ: 49.0 (neutral) | ADX QQQ: 10.5 (range, down) | News IWM: y | RSI IWM: 43.0 (oversold) | ADX IWM: 19.3 (range, down)
+============================================================
+2026-09-02 19:19:15 INFO    agent.offhours: DEBATE [IWM]
+============================================================
+--- BULL ---
+VERDICT: APPROVE
+THESIS: The long strangle fits MACRO_DANGER; IV richer than RV.
+
+--- BEAR ---
+VERDICT: VETO
+THESIS: NFP tail risk outweighs the premium.
+
+--- JUDGE (featherless) ---
+VERDICT: APPROVE
+THESIS: Premium-rich, risk within the 1.5% cap.
+============================================================
+2026-09-04 01:29:59 INFO    agent.offhours: MARKET CONTEXT
+============================================================
+Macro: Employment Situation (NFP) (2026-09-04) | VIX: VIX 14.36 / VXV 13.90 (ratio 1.03, backwardation) | News SPY: z | RSI SPY: 62.8 (neutral) | ADX SPY: 12.8 (range, up) | News QQQ: z | RSI QQQ: 57.3 (neutral) | ADX QQQ: 9.7 (range, up) | News IWM: z | RSI IWM: 49.1 (neutral) | ADX IWM: 18.8 (range, down)
+============================================================
+2026-09-04 01:30:12 INFO    agent.offhours: ============================================================
+SCAN TABLE  (IV-RV>=+0.015  ER<0.45  floor>0.08  c/w>=10%)
+----------------------------------------------------------
+  SPY   px  773.12  IV 0.085  RV 0.083  IVRV +0.002 FAIL  ER 0.31 ok    floor ok    c/w   --   -> skipped [precheck] already holds a position or working order in SPY
+  QQQ   px  718.04  IV 0.132  RV 0.138  IVRV -0.005 FAIL  ER 0.14 ok    floor ok    c/w   --   -> skipped [strategy] strategy did not propose a trade
+  IWM   px  295.20  IV 0.130  RV 0.133  IVRV -0.003 FAIL  ER 0.12 ok    floor ok    c/w   --   -> skipped [precheck] already holds a position or working order in IWM
+============================================================
+2026-09-04 01:31:15 INFO    agent.offhours: NIGHTLY POST-MORTEM
+============================================================
+Nightly Post-Mortem - Sep 03, 2026
+
+Ticker scans today:       447  (3-ticker basket)
+Trades proposed:          165
+Trades approved:          40
+Vetoed by risk_manager:   98
+Vetoed by risk_officer:   27
+Open positions:           2
+Unrealized P&L (open):    $-16
+Dominant regime:          Overall Neutral / No-Trade  (No trade - 98 scans)
+
+Regime breakdown:
+  - No trade: 98
+  - Regime OVERRIDE: MACRO_DANGER -> Long Strangle (vetoed short-vol iron_condor): 48
+  - Regime A: High Volatility -> Iron Condor: 45
+============================================================
+"""
+
+AUDIT_MD = """\
+# Final Session Audit — Multi-Agent Debate Transcripts
+
+## QQQ — 2026-09-03 13:49 ET
+
+**Pipeline outcome:** DECISION SUMMARY — Vetoed at [risk_officer]: risk_officer VETO (debate/featherless) — NFP risk.
+    order: 3x QQQ iron_condor exp 2026-09-04 credit $1.71 width $6.00 [SP:QQQ260904P00713000 BP:QQQ260904P00707000]
+
+```
+--- BULL ---
+VERDICT: APPROVE
+THESIS: Iron condor fits the high-vol regime.
+
+--- BEAR ---
+VERDICT: VETO
+THESIS: Contango plus NFP; skip it.
+
+--- JUDGE (featherless) ---
+VERDICT: VETO
+THESIS: The NFP report poses significant risk; veto.
+```
+
+## SPY — 2026-09-03 13:53 ET
+
+**Pipeline outcome:** DECISION SUMMARY — Executed at [executor]: submitted order 2de4751f — 3x SPY bull_put exp 2026-09-04 credit $0.79 width $5.00
+
+```
+--- BULL ---
+VERDICT: APPROVE
+THESIS: Bullish sentiment; sell the put spread.
+
+--- BEAR ---
+VERDICT: APPROVE
+THESIS: Defined risk and a clear trend; acceptable.
+
+--- JUDGE (ollama:llama3.2) ---
+VERDICT: APPROVE
+THESIS: Within the cap; approve.
+```
+"""
+
+SESSION = {
+    "starting_equity": 99870.9,
+    "account_id": "PA3FCNG4S7EO",
+    "trading_halted": False,
+    "open_condors": [
+        {"id": "a", "symbol": "SPY", "structure": "bull_put", "expiry": "2026-09-08",
+         "quantity": 3, "entry_credit": 0.98, "legs": []},
+        {"id": "b", "symbol": "IWM", "structure": "bull_put", "expiry": "2026-09-08",
+         "quantity": 3, "entry_credit": 0.86, "legs": []},
+    ],
+    "history": [
+        {"kind": "submitted", "at": "2026-09-03T10:33:28-04:00", "symbol": "QQQ",
+         "structure": "iron_condor", "quantity": 3, "entry_credit": 1.77,
+         "regime": "Regime A: High Volatility -> Iron Condor",
+         "detail": "3x QQQ iron_condor exp 2026-09-04 credit $1.77 width $7.00 [SP:...]",
+         "gates": {"iv_rv_spread": 0.071, "credit_to_width": 0.2535, "order_risk": 1567.5,
+                   "max_risk_allowed": 1982.7},
+         "officer": {"provider": "featherless", "approved": True, "thesis": "fits regime"}},
+        {"kind": "opened", "at": "2026-09-02T12:48:55-04:00", "symbol": "IWM",
+         "structure": "long_strangle", "regime": None, "detail": "fill confirmed"},
+        {"kind": "reconciled", "at": "2026-09-02T21:57:17+05:30",
+         "detail": "JAM RESET: broker flat"},
+    ],
+}
+
+
+# --------------------------------------------------------------------------- #
+# constants
+# --------------------------------------------------------------------------- #
+def test_safety_invariants_are_exposed_as_constants() -> None:
+    assert ad.SAFETY_FLOOR_USD == 95_000
+    assert ad.PER_TRADE_CAP_PCT == 1.5
+
+
+# --------------------------------------------------------------------------- #
+# market context / term structure
+# --------------------------------------------------------------------------- #
+def test_last_market_context_takes_the_most_recent_block() -> None:
+    ctx = ad.last_market_context(ACTIVITY)
+    assert ctx["vix"] == pytest.approx(14.36)
+    assert ctx["vxv"] == pytest.approx(13.90)
+    assert ctx["ratio"] == pytest.approx(1.03)
+    assert ctx["state"] == "backwardation"
+
+
+def test_last_market_context_is_none_when_absent() -> None:
+    assert ad.last_market_context("nothing here") is None
+
+
+def test_ticker_metrics_merges_rsi_from_context_and_iv_from_scan() -> None:
+    rows = ad.ticker_metrics(ACTIVITY, ("SPY", "QQQ", "IWM"))
+    by_sym = {r["symbol"]: r for r in rows}
+    assert by_sym["SPY"]["rsi"] == pytest.approx(62.8)
+    assert by_sym["SPY"]["iv"] == pytest.approx(0.085)
+    assert by_sym["QQQ"]["rv"] == pytest.approx(0.138)
+    assert by_sym["IWM"]["price"] == pytest.approx(295.20)
+    assert by_sym["IWM"]["rsi_label"] == "neutral"
+
+
+# --------------------------------------------------------------------------- #
+# debates
+# --------------------------------------------------------------------------- #
+def test_parse_debates_from_audit_markdown() -> None:
+    debates = ad.parse_debates(audit_md=AUDIT_MD, activity_text="")
+    assert len(debates) == 2
+    qqq = debates[0]
+    assert qqq["symbol"] == "QQQ"
+    assert qqq["outcome"] == "vetoed"
+    roles = {r["role"]: r for r in qqq["rounds"]}
+    assert roles["BULL"]["verdict"] == "APPROVE"
+    assert roles["BEAR"]["verdict"] == "VETO"
+    assert roles["JUDGE"]["verdict"] == "VETO"
+    assert roles["JUDGE"]["provider"] == "featherless"
+    assert "NFP" in roles["JUDGE"]["thesis"]
+
+
+def test_parse_debates_marks_executed_outcome() -> None:
+    debates = ad.parse_debates(audit_md=AUDIT_MD, activity_text="")
+    spy = [d for d in debates if d["symbol"] == "SPY"][0]
+    assert spy["outcome"] == "executed"
+
+
+def test_parse_debates_falls_back_to_activity_log() -> None:
+    debates = ad.parse_debates(audit_md="", activity_text=ACTIVITY)
+    assert len(debates) == 1
+    assert debates[0]["symbol"] == "IWM"
+    roles = {r["role"]: r for r in debates[0]["rounds"]}
+    assert roles["BULL"]["verdict"] == "APPROVE"
+    assert roles["BEAR"]["verdict"] == "VETO"
+
+
+def test_parse_debates_survives_a_corrupt_transcript() -> None:
+    junk = "## X — 2026-09-03 10:00 ET\n\n**Pipeline outcome:** whatever\n\n```\n" + ("!" * 5000) + "\n```\n"
+    out = ad.parse_debates(audit_md=junk, activity_text="")
+    assert isinstance(out, list) and len(out) == 1
+    assert out[0]["rounds"] == []
+
+
+# --------------------------------------------------------------------------- #
+# no-trade decisions
+# --------------------------------------------------------------------------- #
+def test_no_trade_decisions_extracts_skips_with_reasons() -> None:
+    rows = ad.no_trade_decisions(ACTIVITY, limit=20)
+    assert len(rows) == 3
+    assert all(r["decision"] in ("skipped", "blocked", "vetoed") for r in rows)
+    qqq = [r for r in rows if r["symbol"] == "QQQ"][0]
+    assert qqq["stage"] == "strategy"
+    assert "did not propose a trade" in qqq["reason"]
+    assert qqq["iv"] == pytest.approx(0.132)
+
+
+def test_no_trade_decisions_honours_the_limit_and_returns_newest_first() -> None:
+    rows = ad.no_trade_decisions(ACTIVITY, limit=2)
+    assert len(rows) == 2
+
+
+# --------------------------------------------------------------------------- #
+# veto ratio
+# --------------------------------------------------------------------------- #
+def test_veto_ratio_reads_the_nightly_post_mortem() -> None:
+    vr = ad.veto_ratio(ACTIVITY)
+    assert vr["gate_vetoes"] == 98
+    assert vr["ai_vetoes"] == 27
+    assert vr["approved"] == 40
+    assert vr["proposed"] == 165
+    assert vr["scans"] == 447
+    assert vr["open_positions"] == 2
+
+
+def test_veto_ratio_is_empty_dict_when_no_post_mortem() -> None:
+    assert ad.veto_ratio("no post mortem here") == {}
+
+
+def test_regime_breakdown_parses_the_labelled_counts() -> None:
+    rb = ad.regime_breakdown(ACTIVITY)
+    assert rb[0] == ("No trade", 98)
+    assert ("Regime A: High Volatility -> Iron Condor", 45) in rb
+
+
+# --------------------------------------------------------------------------- #
+# trade history
+# --------------------------------------------------------------------------- #
+def test_trade_history_normalises_session_records() -> None:
+    rows = ad.trade_history(SESSION)
+    # 'reconciled' rows are notes, not trades; rows are chronological
+    assert sorted(r["symbol"] for r in rows) == ["IWM", "QQQ"]
+    qqq = [r for r in rows if r["symbol"] == "QQQ"][0]
+    assert qqq["structure"] == "iron_condor"
+    assert qqq["credit"] == pytest.approx(1.77)
+    assert qqq["officer_provider"] == "featherless"
+    assert qqq["officer_approved"] is True
+    assert qqq["width"] == pytest.approx(7.0)
+
+
+# --------------------------------------------------------------------------- #
+# account summary
+# --------------------------------------------------------------------------- #
+def test_account_summary_computes_pnl_and_status() -> None:
+    s = ad.account_summary(SESSION, closing_equity=96977.27)
+    assert s["starting"] == pytest.approx(99870.9)
+    assert s["current"] == pytest.approx(96977.27)
+    assert s["pnl_abs"] == pytest.approx(-2893.63, abs=0.01)
+    assert s["pnl_pct"] == pytest.approx(-2.898, abs=0.01)
+    assert s["open_positions"] == 2
+
+
+def test_account_summary_status_is_stopped_flat_when_forced() -> None:
+    s = ad.account_summary(SESSION, closing_equity=96977.27, force_stopped_flat=True)
+    assert s["status_label"] == "STOPPED / FLAT"
+    assert s["is_flat"] is True
+
+
+def test_account_summary_reports_live_state_when_not_forced() -> None:
+    s = ad.account_summary(SESSION, closing_equity=96977.27)
+    assert s["is_flat"] is False           # 2 open condors in the fixture
+    assert "OPEN" in s["status_label"] or "RUNNING" in s["status_label"]
+
+
+# --------------------------------------------------------------------------- #
+# loaders
+# --------------------------------------------------------------------------- #
+def test_load_text_returns_empty_string_for_a_missing_file(tmp_path) -> None:
+    assert ad.load_text(tmp_path / "nope.log") == ""
+
+
+def test_load_session_round_trips(tmp_path) -> None:
+    p = tmp_path / "session.json"
+    p.write_text(json.dumps(SESSION), encoding="utf-8")
+    assert ad.load_session(p)["account_id"] == "PA3FCNG4S7EO"
+
+
+def test_load_session_missing_file_returns_empty_dict(tmp_path) -> None:
+    assert ad.load_session(tmp_path / "nope.json") == {}

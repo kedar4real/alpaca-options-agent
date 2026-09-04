@@ -1,0 +1,36 @@
+{
+  "captured_at": "2026-09-04T09:17:16.374597+00:00",
+  "captured_at_note": "pre-market snapshot, 2026-09-04; agent idle, hard stop pending at the 09:30 ET open",
+  "account_id": "PA3FCNG4S7EO",
+  "equity": 96977.27,
+  "last_equity": 96971.27,
+  "cash": 97565.27,
+  "market_open": false,
+  "position_legs": [
+    {
+      "symbol": "IWM260908P00289000",
+      "qty": 3,
+      "market_value": 51.0,
+      "unrealized_pl": -12.0
+    },
+    {
+      "symbol": "IWM260908P00294000",
+      "qty": -3,
+      "market_value": -312.0,
+      "unrealized_pl": 12.0
+    },
+    {
+      "symbol": "SPY260908P00766000",
+      "qty": 3,
+      "market_value": 222.0,
+      "unrealized_pl": 3.0
+    },
+    {
+      "symbol": "SPY260908P00771000",
+      "qty": -3,
+      "market_value": -549.0,
+      "unrealized_pl": -42.9999
+    }
+  ],
+  "open_orders": 0
+}

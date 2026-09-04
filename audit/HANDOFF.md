@@ -20,7 +20,7 @@ Audience: **hackathon judges.** The narrative it sells:
    Bull/Bear/Judge debate is the _second_ line of defence, not the first.
 3. When a real execution bug appeared (leg-by-leg closes → transient naked short
    → broker rejection → orphan legs), it was fixed structurally with an atomic
-   multi-leg close (**commit `b83438d`**).
+   multi-leg close (**commit `fcafbbd`**).
 
 It has **no control surface**. It never imports an order-capable Alpaca client.
 The "Emergency Flatten" button is permanently `disabled=True`.
@@ -275,7 +275,7 @@ log-local-time captions stay in place).
 * `st.caption`: "every Risk $ sits under its Cap $ …".
 * **Still-open at session end** dataframe (SPY / IWM bull_put, exp 2026-09-08).
 * `.note-box` (amber): the Atomic MLEG execution-invariant note referencing
-  commit `b83438d`.
+  commit `fcafbbd`.
 
 ### "The Gate is the Hero" — `st.columns([1, 1])`
 * Left: Altair horizontal bar — `Rejected by Gate (98) | Vetoed by AI (27) |
@@ -284,7 +284,7 @@ log-local-time captions stay in place).
 * Right: `Regime mix` dataframe (top 8 of `regime_breakdown`) +
   `st.expander("Final RUN MODE banner")` → `st.code(latest_run_mode)`.
 
-### "Incident Response: Infrastructure Hardening (Commit `b83438d`)"
+### "Incident Response: Infrastructure Hardening (Commit `fcafbbd`)"
 Two `st.code` blocks side by side — **Before** (leg-by-leg `close_position`
 loop) vs **After** (`build_close_request` → one reversing `OrderClass.MLEG`
 market order). Caption on why it's a market order. Final `st.caption` = the

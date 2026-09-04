@@ -62,7 +62,7 @@ PY
   MLEG execution-invariant note.
 * **The Gate is the Hero** — funnel bar chart (Gate vetoes vs AI vetoes vs
   approved) + regime mix.
-* **Incident Response** — before/after diff for commit `b83438d` (atomic close).
+* **Incident Response** — before/after diff for commit `fcafbbd` (atomic close).
 
 ## Tests
 

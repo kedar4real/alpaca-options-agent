@@ -260,7 +260,7 @@ if len(_eq) >= 2:
     hi = float(max(p["equity"] for p in _eq))
     order = list(eq_df["label"])
 
-    _pad = max((hi - lo) * 0.35, 150)
+    _pad = max((hi - lo) * 0.14, 90)
     _x = alt.X("label:N", sort=order, title=None, axis=alt.Axis(labelAngle=0, grid=False))
     _y = alt.Y("equity:Q", title="account equity ($)",
                scale=alt.Scale(zero=False, domain=[round(lo - _pad), round(hi + _pad)]),
@@ -348,10 +348,10 @@ with st.sidebar:
 # --------------------------------------------------------------------------- #
 # main — three columns
 # --------------------------------------------------------------------------- #
-st.markdown("### Post-Competition Audit — evidence viewer")
 st.caption(
-    "Retrospective, read-only. Every number below is parsed from `session.json`, "
-    "`logs/agent_activity.log`, and `REPORTS/FINAL_SESSION_AUDIT.md`."
+    "Retrospective, read-only evidence viewer. Every figure is parsed from `session.json`, "
+    "`logs/agent.log`, `logs/agent_activity.log`, `REPORTS/FINAL_SESSION_AUDIT.md`, and "
+    "`REPORTS/audit_snapshot.json` — see **Data provenance & disclosures** at the foot of the page."
 )
 
 col1, col2, col3 = st.columns([1.05, 1.25, 1.15], gap="large")
@@ -445,12 +445,13 @@ with col2:
             if d.get("pipeline"):
                 st.caption(f"Pipeline outcome — {d['pipeline']}")
 
-            _AVA = {"BULL": "🐂", "BEAR": "🐻", "JUDGE": "⚖️"}
+            _AVA = {"BULL": ":material/trending_up:", "BEAR": ":material/trending_down:",
+                    "JUDGE": ":material/balance:"}
             _ROLECLS = {"BULL": "role-bull", "BEAR": "role-bear", "JUDGE": "role-judge"}
             if not d["rounds"]:
                 st.warning("Transcript on file is empty or corrupt (LLM returned no parseable text).")
             for r in d["rounds"]:
-                with st.chat_message(r["role"].lower(), avatar=_AVA.get(r["role"], "•")):
+                with st.chat_message(r["role"].lower(), avatar=_AVA.get(r["role"], ":material/circle:")):
                     v = r["verdict"]
                     pill = (
                         f'<span class="verdict-pill pill-approve">APPROVE</span>' if v == "APPROVE"
@@ -465,44 +466,6 @@ with col2:
                     st.markdown(r["thesis"] or "_(no thesis text)_")
     else:
         st.info("No Bull/Bear/Judge transcripts found.")
-
-    st.divider()
-    _dc = D["decision_counts"]
-    _dc_total = sum(_dc.values())
-    st.markdown(f"**Decision Log** &nbsp;·&nbsp; {_dc_total:,} pipeline decisions, full reasons")
-    _stage_opts = ["all"] + [s for s in
-                             ("precheck", "strategy", "risk_manager", "risk_officer", "executor")
-                             if _dc.get(s)]
-    _fmt = (lambda s: f"all · {_dc_total:,}" if s == "all" else f"{s} · {_dc.get(s, 0):,}")
-    _pick = st.segmented_control("Pipeline stage", _stage_opts, format_func=_fmt,
-                                 default="all", key="dlog_stage") or "all"
-    _rows = ad.decision_log(D["agent_log"], stage=None if _pick == "all" else _pick, limit=40)
-    if _rows:
-        dl_df = pd.DataFrame(_rows)[["ts", "symbol", "outcome", "stage", "reason"]]
-        dl_df["ts"] = dl_df["ts"].str.slice(0, 16)
-        dl_df.columns = ["When (log-local)", "Sym", "Call", "Stage", "Reason (full)"]
-        st.dataframe(
-            dl_df, hide_index=True, width="stretch", height=340,
-            column_config={"Reason (full)": st.column_config.TextColumn(width="large")},
-        )
-        st.caption(
-            "Full `DECISION SUMMARY` text from `logs/agent.log` — untruncated, newest first "
-            "(the SCAN TABLE in `agent_activity.log` clips these at ~72 chars). "
-            "`When` is log-local time (IST; ET = IST − 9:30)."
-        )
-    else:
-        st.info("No DECISION SUMMARY lines found in logs/agent.log.")
-    v = D["veto"]
-    if v:
-        approved = v.get("approved") or 0
-        gate = v.get("gate_vetoes") or 0
-        ai = v.get("ai_vetoes") or 0
-        prop = v.get("proposed") or (approved + gate + ai)
-        st.caption(
-            f"Session totals — {v.get('scans','?')} scans → {prop} proposed → "
-            f"**{gate} killed by the Gate**, {ai} vetoed by the AI, {approved} approved. "
-            "The agent's default answer is No."
-        )
 
 # ----- Column 3: The Evidence (the audit) ----- #
 with col3:
@@ -574,6 +537,51 @@ with col3:
         "can never strand one leg filled and another open.</div>",
         unsafe_allow_html=True,
     )
+
+# --------------------------------------------------------------------------- #
+# 2b. DECISION LOG — full-width: every pipeline decision, untruncated
+# --------------------------------------------------------------------------- #
+st.divider()
+_dc = D["decision_counts"]
+_dc_total = sum(_dc.values())
+_v = D["veto"]
+dl1, dl2 = st.columns([3, 1.4], gap="large")
+with dl1:
+    st.markdown(f"### The agent's default answer is *No* — {_dc_total:,} pipeline decisions")
+with dl2:
+    if _v:
+        st.markdown(
+            f"<div style='text-align:right;color:#5c6472;font-size:13px;padding-top:10px'>"
+            f"{_v.get('scans','?')} scans → {_v.get('proposed','?')} proposed →<br>"
+            f"<b style='color:#3f4d72'>{_v.get('gate_vetoes','?')} killed by the gate</b> · "
+            f"{_v.get('ai_vetoes','?')} vetoed by the AI · {_v.get('approved','?')} approved</div>",
+            unsafe_allow_html=True,
+        )
+_stage_opts = ["all"] + [s for s in
+                         ("precheck", "strategy", "risk_manager", "risk_officer", "executor")
+                         if _dc.get(s)]
+_fmt = (lambda s: f"all · {_dc_total:,}" if s == "all" else f"{s} · {_dc.get(s, 0):,}")
+_pick = st.segmented_control("Pipeline stage", _stage_opts, format_func=_fmt,
+                             default="all", key="dlog_stage") or "all"
+_rows = ad.decision_log(D["agent_log"], stage=None if _pick == "all" else _pick, limit=60)
+if _rows:
+    dl_df = pd.DataFrame(_rows)[["ts", "symbol", "outcome", "stage", "reason"]]
+    dl_df["ts"] = dl_df["ts"].str.slice(0, 16)
+    dl_df.columns = ["When (log-local)", "Sym", "Call", "Stage", "Reason (full, untruncated)"]
+    st.dataframe(
+        dl_df, hide_index=True, width="stretch", height=380,
+        column_config={
+            "When (log-local)": st.column_config.TextColumn(width="small"),
+            "Reason (full, untruncated)": st.column_config.TextColumn(width="large"),
+        },
+    )
+    st.caption(
+        "Full `DECISION SUMMARY` text from `logs/agent.log`, newest first — the SCAN TABLE in "
+        "`agent_activity.log` clips these reasons at ~72 chars; these are the complete text. "
+        "`When` is log-local time (IST on the box; ET = IST − 9:30)."
+    )
+else:
+    st.info("No DECISION SUMMARY lines found in logs/agent.log.")
 
 # --------------------------------------------------------------------------- #
 # 3b. CAGE COMPLIANCE — every trade sized under the 1.5% cap
@@ -762,12 +770,32 @@ st.caption(
     "has to fill, and on a defined-risk structure the worst case is already the known max loss."
 )
 
-# honest footnote — the audit view forces STOPPED/FLAT for the retrospective framing
+# --------------------------------------------------------------------------- #
+# DATA PROVENANCE & DISCLOSURES — every honest caveat, in one place
+# --------------------------------------------------------------------------- #
+st.divider()
+st.markdown("### Data provenance & disclosures")
 snap = D["snapshot"]
-if snap:
-    st.caption(
-        f"Snapshot captured {snap.get('captured_at','?')} · equity "
-        f"${snap.get('equity',0):,.2f} · {len(snap.get('position_legs') or [])} option legs on the book "
-        f"at capture ({snap.get('captured_at_note','')}). This audit view fixes the status "
-        "as STOPPED / FLAT for the post-competition retrospective."
-    )
+_legs = len(snap.get("position_legs") or []) if snap else 0
+st.markdown(
+    f"""
+- **Status is fixed to STOPPED / FLAT for this retrospective.** Snapshot captured
+  `{snap.get('captured_at', '?') if snap else '?'}` shows equity
+  **${(snap.get('equity', 0) if snap else 0):,.2f}** with **{_legs} option legs still on the book**
+  ({snap.get('captured_at_note', '') if snap else 'no snapshot on file'}). The dashboard
+  presents the account as STOPPED / FLAT because the audited session is over; it is not a
+  claim that the book is empty right now.
+- **All log timestamps are log-local time (IST on the box; ET = IST − 9:30).** They are shown
+  verbatim, not converted. `FINAL_SESSION_AUDIT.md` section headers are already in ET.
+- **Decision-log reasons come from `logs/agent.log` `DECISION SUMMARY` lines** — the full,
+  untruncated text. The SCAN TABLE in `agent_activity.log` clips the same reasons at ~72 chars;
+  that clipped copy is not used here.
+- **Term structure is VIX vs VXV (3-month)**, the only pair the log carries — labelled `VXV · 3M`,
+  not VIX9D.
+- **Veto funnel and regime mix read the last NIGHTLY POST-MORTEM only** (one trading day).
+- **Realized P&L is summed from `session.json` `history` → `closed.pnl`**; per-trade P&L is not
+  otherwise tracked, so the grouped table shows it per name/structure, not per fill.
+- **Read-only.** This app never constructs an order-capable Alpaca client; the Emergency
+  Flatten control is inert.
+""".strip()
+)

@@ -50,81 +50,115 @@ st.markdown(
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap');
 
-    html, body, [class*="css"], .stMarkdown, p, span, div, label {
+    :root { color-scheme: light; }
+
+    /* --- force a light, high-contrast canvas on every machine ------------- */
+    .stApp,
+    [data-testid="stAppViewContainer"],
+    [data-testid="stMain"],
+    [data-testid="stHeader"] { background: #f7f8fa !important; }
+
+    [data-testid="stSidebar"] { background: #eceff4 !important; }
+    [data-testid="stSidebar"] p,
+    [data-testid="stSidebar"] li,
+    [data-testid="stSidebar"] label,
+    [data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2,
+    [data-testid="stSidebar"] h3, [data-testid="stSidebar"] h4 { color: #2b2f3a !important; }
+
+    /* base font + ink — cascades to spans WITHOUT touching icon-font elements */
+    .stApp {
         font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
         color: #2b2f3a;
     }
-    .stApp { background: #f7f8fa; }
-    code, pre, .stCodeBlock, [data-testid="stMetricValue"] {
+    .stApp p, .stApp li, .stApp label, .stApp td, .stApp th,
+    .stApp h1, .stApp h2, .stApp h3, .stApp h4, .stApp h5,
+    .stMarkdown, [data-testid="stMarkdownContainer"] { color: #2b2f3a; }
+    .stApp [data-testid="stCaptionContainer"],
+    .stApp [data-testid="stCaptionContainer"] * { color: #5c6472 !important; }
+    /* never restyle Streamlit's Material icon glyphs */
+    [data-testid="stIconMaterial"], .material-symbols-rounded, span[class*="material"] {
+        font-family: 'Material Symbols Rounded', 'Material Symbols Outlined' !important;
+    }
+
+    code, pre, [data-testid="stMetricValue"] {
         font-family: 'IBM Plex Mono', ui-monospace, monospace !important;
     }
-
-    /* Slim institutional status bar */
-    .status-bar {
-        display: flex; justify-content: space-between; align-items: center;
-        gap: 16px; flex-wrap: wrap;
-        background: #1f2430; color: #e7e9ee;
-        border: 1px solid #2c3342; border-radius: 8px;
-        padding: 8px 16px; margin-bottom: 18px;
-        font-family: 'IBM Plex Mono', monospace; font-size: 12.5px;
-        letter-spacing: 0.02em;
+    div[data-testid="stMetricValue"] { font-size: 26px; font-weight: 600; color: #1f2430; }
+    div[data-testid="stMetricLabel"], div[data-testid="stMetricLabel"] * {
+        color: #5c6472 !important; text-transform: uppercase;
+        font-size: 11px; letter-spacing: 0.05em;
     }
-    .status-bar .mid span {
-        background: #2b3342; border: 1px solid #3a4356;
-        padding: 3px 9px; border-radius: 5px; margin: 0 3px;
-        color: #cfd4de;
-    }
-    .status-bar .right { color: #f0b45f; font-weight: 600; }
-    .status-bar .amber span { color: #f0b45f; border-color: #6b5321; background: #332913; }
 
-    /* Soft cards — subtle border, no heavy shadow */
-    .soft-card {
-        background: #ffffff; border: 1px solid #e4e7ec; border-radius: 10px;
-        padding: 16px 18px; margin-bottom: 14px;
-    }
-    .soft-card h4 { margin: 0 0 4px 0; font-size: 13px; font-weight: 600;
-        text-transform: uppercase; letter-spacing: 0.06em; color: #667085; }
+    /* dataframes / tables */
+    [data-testid="stDataFrame"], [data-testid="stTable"] { background: #ffffff; }
 
-    /* Terminal-style code blocks for the AI debate */
-    .stCodeBlock, pre {
+    /* code blocks — light terminal look, dark text */
+    [data-testid="stCode"], .stCodeBlock, pre {
         background-color: #f0f2f6 !important;
         border-radius: 8px !important;
         border: 1px solid #e0e0e0 !important;
     }
+    [data-testid="stCode"] * , .stCodeBlock * { color: #2b2f3a; }
 
-    div[data-testid="stMetricValue"] { font-size: 26px; font-weight: 600; }
-    div[data-testid="stMetricLabel"] { color: #667085; text-transform: uppercase;
-        font-size: 11px; letter-spacing: 0.05em; }
-
-    /* Chat-message soft cards for the debate */
-    [data-testid="stChatMessage"] {
-        background: #ffffff; border: 1px solid #e4e7ec;
-        border-radius: 10px; padding: 10px 14px; margin-bottom: 8px;
+    /* --- slim institutional status bar (always dark, self-contained) ----- */
+    .status-bar {
+        display: flex; justify-content: space-between; align-items: center;
+        gap: 16px; flex-wrap: wrap;
+        background: #1f2430; border: 1px solid #2c3342; border-radius: 8px;
+        padding: 8px 16px; margin-bottom: 18px;
+        font-family: 'IBM Plex Mono', monospace; font-size: 12.5px; letter-spacing: 0.02em;
     }
+    .status-bar, .status-bar * { color: #e7e9ee !important; }
+    .status-bar .mid span {
+        background: #2b3342; border: 1px solid #3a4356;
+        padding: 3px 9px; border-radius: 5px; margin: 0 3px;
+    }
+    .status-bar .mid span, .status-bar .mid span * { color: #cfd4de !important; }
+    .status-bar .right, .status-bar .right * { color: #f0b45f !important; font-weight: 600; }
+    .status-bar.amber .mid span, .status-bar .amber span,
+    .status-bar.amber .mid span * { color: #f4c27a !important; border-color: #6b5321; background: #33291b; }
 
-    .verdict-pill { padding: 2px 10px; border-radius: 999px; font-size: 11px;
-        font-weight: 700; letter-spacing: 0.04em; font-family: 'IBM Plex Mono', monospace; }
-    .pill-approve { background: #e3efe6; color: #3f7d54; border: 1px solid #bcdcc6; }
-    .pill-veto    { background: #f6e5e5; color: #a5474a; border: 1px solid #e6c4c4; }
-    .pill-na      { background: #eceef2; color: #6b7280; border: 1px solid #d9dce3; }
-
-    .role-bull { color: #3f7d54; font-weight: 700; }
-    .role-bear { color: #a5474a; font-weight: 700; }
-    .role-judge { color: #4a5a80; font-weight: 700; }
-
+    /* --- invariant cards (the cage) ------------------------------------- */
     .invariant {
         background: #eef1f6; border: 1px solid #dde2ec; border-left: 3px solid #4a5a80;
         border-radius: 6px; padding: 8px 12px; margin-bottom: 8px;
-        font-family: 'IBM Plex Mono', monospace; font-size: 12.5px;
+        font-family: 'IBM Plex Mono', monospace; font-size: 12.5px; color: #2b2f3a;
     }
+    .invariant, .invariant b { color: #2b2f3a !important; }
+    .invariant span { color: #5c6472 !important; }
+
+    /* --- the atomic-fix note box -------------------------------------- */
     .note-box {
         background: #fbf3e4; border: 1px solid #ecdcae; border-left: 3px solid #cf9b4a;
-        border-radius: 6px; padding: 12px 14px; font-size: 13px; color: #5a4a2a;
+        border-radius: 6px; padding: 12px 14px; font-size: 13px;
     }
+    .note-box, .note-box * { color: #5a4a2a !important; }
+    .note-box code { background: #f2e6cd !important; border: none !important; }
 
-    header { visibility: hidden; }
+    /* --- chat-message soft cards for the debate ----------------------- */
+    [data-testid="stChatMessage"] {
+        background: #ffffff !important; border: 1px solid #e4e7ec;
+        border-radius: 10px; padding: 10px 14px; margin-bottom: 8px;
+    }
+    [data-testid="stChatMessage"] p, [data-testid="stChatMessage"] li,
+    [data-testid="stChatMessage"] span:not(.verdict-pill) { color: #2b2f3a; }
+
+    .verdict-pill {
+        padding: 2px 10px; border-radius: 999px; font-size: 11px; font-weight: 700;
+        letter-spacing: 0.04em; font-family: 'IBM Plex Mono', monospace;
+    }
+    .pill-approve { background: #dcecdf !important; color: #2f6b45 !important; border: 1px solid #b6d4c0; }
+    .pill-veto    { background: #f3dcdc !important; color: #963f43 !important; border: 1px solid #e0bebe; }
+    .pill-na      { background: #e6e8ee !important; color: #565f6e !important; border: 1px solid #d3d7df; }
+
+    .role-bull  { color: #2f6b45 !important; font-weight: 700; }
+    .role-bear  { color: #963f43 !important; font-weight: 700; }
+    .role-judge { color: #3f4d72 !important; font-weight: 700; }
+
+    /* de-clutter the top chrome but keep it reachable (Settings -> Theme) */
+    [data-testid="stToolbar"] { background: transparent !important; }
+    [data-testid="stDecoration"] { display: none; }
     footer { visibility: hidden; }
-    #MainMenu { visibility: hidden; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -295,10 +329,10 @@ with col1:
 
     st.markdown("**Basket — last cycle**")
     tick_df = pd.DataFrame(D["tickers"])[["symbol", "price", "rsi", "rsi_label", "iv", "rv"]]
-    tick_df.columns = ["Ticker", "Price", "RSI(14)", "RSI zone", "ATM IV", "RV(10d)"]
+    tick_df.columns = ["Ticker", "Price", "RSI", "Zone", "IV", "RV"]
     st.dataframe(
         tick_df.style.format(
-            {"Price": "{:.2f}", "RSI(14)": "{:.1f}", "ATM IV": "{:.3f}", "RV(10d)": "{:.3f}"},
+            {"Price": "{:.2f}", "RSI": "{:.1f}", "IV": "{:.3f}", "RV": "{:.3f}"},
             na_rep="—",
         ),
         hide_index=True,

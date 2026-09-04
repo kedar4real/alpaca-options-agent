@@ -1,0 +1,15 @@
+# Audit dashboard (audit/dashboard.py) — pin a light, high-contrast theme so the
+# page reads the same on every machine regardless of the viewer's OS/browser
+# dark-mode preference.
+[theme]
+base = "light"
+primaryColor = "#4a5a80"
+backgroundColor = "#f7f8fa"
+secondaryBackgroundColor = "#ffffff"
+textColor = "#2b2f3a"
+font = "sans serif"
+
+[client]
+# keep the ⋮ menu reachable so a viewer can flip Settings → Theme if their
+# browser cached a dark preference before this config existed
+toolbarMode = "viewer"

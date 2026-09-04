@@ -128,14 +128,6 @@ st.markdown(
     .invariant, .invariant b { color: #2b2f3a !important; }
     .invariant span { color: #5c6472 !important; }
 
-    /* --- the atomic-fix note box -------------------------------------- */
-    .note-box {
-        background: #fbf3e4; border: 1px solid #ecdcae; border-left: 3px solid #cf9b4a;
-        border-radius: 6px; padding: 12px 14px; font-size: 13px;
-    }
-    .note-box, .note-box * { color: #5a4a2a !important; }
-    .note-box code { background: #f2e6cd !important; border: none !important; }
-
     /* --- chat-message soft cards for the debate ----------------------- */
     [data-testid="stChatMessage"] {
         background: #ffffff !important; border: 1px solid #e4e7ec;
@@ -343,7 +335,6 @@ with st.sidebar:
         help="Agent is already flat and stopped.",
         width='stretch',
     )
-    st.caption("Read-only audit view — no control surface is wired.")
 
 # --------------------------------------------------------------------------- #
 # main — three columns
@@ -351,7 +342,7 @@ with st.sidebar:
 st.caption(
     "Retrospective, read-only evidence viewer. Every figure is parsed from `session.json`, "
     "`logs/agent.log`, `logs/agent_activity.log`, `REPORTS/FINAL_SESSION_AUDIT.md`, and "
-    "`REPORTS/audit_snapshot.json` — see **Data provenance & disclosures** at the foot of the page."
+    "`REPORTS/audit_snapshot.json`."
 )
 
 col1, col2, col3 = st.columns([1.05, 1.25, 1.15], gap="large")
@@ -529,15 +520,6 @@ with col3:
         op_df.columns = ["Sym", "Structure", "Expiry", "Qty", "Credit"]
         st.dataframe(op_df, hide_index=True, width='stretch')
 
-    st.markdown(
-        '<div class="note-box"><b>NOTE — Execution Invariant.</b> Trade execution was '
-        "halted following the identification of bid-ask friction in leg-by-leg closes. "
-        "Commit <code>b83438d</code> (Atomic MLEG) was implemented as the final system "
-        "invariant: every exit is now a single reversing multi-leg order, so an unwind "
-        "can never strand one leg filled and another open.</div>",
-        unsafe_allow_html=True,
-    )
-
 # --------------------------------------------------------------------------- #
 # 2b. DECISION LOG — full-width: every pipeline decision, untruncated
 # --------------------------------------------------------------------------- #
@@ -708,94 +690,3 @@ with rcol:
         with st.expander("Final RUN MODE banner (the configured cage)"):
             st.code("\n".join(D["run_mode"]), language="text")
 
-# --------------------------------------------------------------------------- #
-# 5. EXECUTION AUDIT — the Atomic Fix diff
-# --------------------------------------------------------------------------- #
-st.divider()
-st.markdown("### Incident Response: Infrastructure Hardening (Commit `b83438d`)")
-st.markdown(
-    "During the final session a routine unwind was rejected mid-flight: closing a "
-    "short leg before its long left the account **transiently naked**, the broker "
-    "rejected the next legs (*“account not eligible to trade uncovered option "
-    "contracts”*), and the remaining legs were stranded as orphans. Fix: **one "
-    "reversing `OrderClass.MLEG` market order** — the broker fills or rejects the "
-    "combo as a unit, so a partial unwind is structurally impossible."
-)
-
-old_col, new_col = st.columns(2, gap="large")
-with old_col:
-    st.markdown("**✗ Before — leg-by-leg close**")
-    st.code(
-        '''def close_condor(self, condor):
-    # one close_position() call per leg, in list order
-    for leg in condor.legs:
-        if not leg.symbol:
-            continue
-        self.trading.close_position(leg.symbol)
-        # ↑ closes a SHORT before its LONG → account is
-        #   transiently naked → broker rejects the rest →
-        #   orphan legs, leg-by-leg fire sale''',
-        language="python",
-    )
-with new_col:
-    st.markdown("**✓ After — atomic MLEG (`b83438d`)**")
-    st.code(
-        '''_CLOSE_SIDE = {"buy": OrderSide.SELL, "sell": OrderSide.BUY}
-
-def build_close_request(legs, quantity):
-    option_legs = [
-        OptionLegRequest(symbol=leg.symbol,
-                         side=_CLOSE_SIDE[leg.action],
-                         ratio_qty=1)
-        for leg in legs
-    ]
-    return MarketOrderRequest(
-        qty=int(quantity),
-        order_class=OrderClass.MLEG,      # fills/rejects as ONE unit
-        time_in_force=TIME_IN_FORCE,
-        legs=option_legs,
-    )
-
-def close_condor(self, condor):
-    legs = [lg for lg in condor.legs if lg.symbol]
-    self.trading.submit_order(
-        build_close_request(legs, condor.quantity))
-    # fallback only if the combo submit itself fails:
-    # leg out SHORTS-first so it is never naked''',
-        language="python",
-    )
-
-st.caption(
-    "Market, not limit: a forced exit (profit target, stop, expiry, hard-stop flatten) "
-    "has to fill, and on a defined-risk structure the worst case is already the known max loss."
-)
-
-# --------------------------------------------------------------------------- #
-# DATA PROVENANCE & DISCLOSURES — every honest caveat, in one place
-# --------------------------------------------------------------------------- #
-st.divider()
-st.markdown("### Data provenance & disclosures")
-snap = D["snapshot"]
-_legs = len(snap.get("position_legs") or []) if snap else 0
-st.markdown(
-    f"""
-- **Status is fixed to STOPPED / FLAT for this retrospective.** Snapshot captured
-  `{snap.get('captured_at', '?') if snap else '?'}` shows equity
-  **${(snap.get('equity', 0) if snap else 0):,.2f}** with **{_legs} option legs still on the book**
-  ({snap.get('captured_at_note', '') if snap else 'no snapshot on file'}). The dashboard
-  presents the account as STOPPED / FLAT because the audited session is over; it is not a
-  claim that the book is empty right now.
-- **All log timestamps are log-local time (IST on the box; ET = IST − 9:30).** They are shown
-  verbatim, not converted. `FINAL_SESSION_AUDIT.md` section headers are already in ET.
-- **Decision-log reasons come from `logs/agent.log` `DECISION SUMMARY` lines** — the full,
-  untruncated text. The SCAN TABLE in `agent_activity.log` clips the same reasons at ~72 chars;
-  that clipped copy is not used here.
-- **Term structure is VIX vs VXV (3-month)**, the only pair the log carries — labelled `VXV · 3M`,
-  not VIX9D.
-- **Veto funnel and regime mix read the last NIGHTLY POST-MORTEM only** (one trading day).
-- **Realized P&L is summed from `session.json` `history` → `closed.pnl`**; per-trade P&L is not
-  otherwise tracked, so the grouped table shows it per name/structure, not per fill.
-- **Read-only.** This app never constructs an order-capable Alpaca client; the Emergency
-  Flatten control is inert.
-""".strip()
-)

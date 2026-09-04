@@ -22,13 +22,13 @@ Over the final competition session it evaluated 165 trade proposals, executed 40
 
 | | |
 |---|---|
+| **Landing page** | https://web-gamma-liard-90.vercel.app |
 | **Audit dashboard** (read-only, live evidence) | https://alpaca-options-agent-ulckr2ugynvqnerbdwohb2.streamlit.app/ |
 | **GitHub repo** | https://github.com/kedar4real/alpaca-options-agent |
 | **Write-up** | this README |
-| **Landing page** | *not yet deployed* — placeholder |
-| **Video walkthrough** | *not yet recorded* — placeholder |
+| **Video walkthrough** | *not yet live* — placeholder |
 
-The two placeholders above are genuinely not live yet, not an oversight — flagging rather than guessing a URL.
+The video link is genuinely not resolving yet (404), not an oversight — flagging rather than guessing a URL.
 
 ---
 

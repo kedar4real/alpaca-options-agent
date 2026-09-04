@@ -1,0 +1,14 @@
+# Audit dashboard (audit/dashboard.py) — dark theme matching the landing page.
+# Consistent visual identity across both the landing page and the evidence viewer.
+[theme]
+base = "dark"
+primaryColor = "#F5A623"
+backgroundColor = "#06030B"
+secondaryBackgroundColor = "#0F0B18"
+textColor = "#e8eef6"
+font = "sans serif"
+
+[client]
+# keep the ⋮ menu reachable so a viewer can flip Settings → Theme if their
+# browser cached a dark preference before this config existed
+toolbarMode = "viewer"

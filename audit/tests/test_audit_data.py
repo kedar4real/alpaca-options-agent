@@ -406,3 +406,66 @@ def test_decision_log_stage_counts() -> None:
     assert counts["executor"] == 1
     assert counts["strategy"] == 1
     assert sum(counts.values()) == 5
+
+
+# =========================================================================== #
+# Polish pass — trade_history_grouped (churn rollup with realized P&L)
+# =========================================================================== #
+GROUP_SESSION = {
+    "starting_equity": 99870.9,
+    "history": [
+        {"kind": "submitted", "at": "2026-09-03T13:32:00-04:00", "id": "a", "symbol": "SPY",
+         "structure": "bull_put", "entry_credit": 0.83,
+         "officer": {"provider": "featherless", "approved": True}},
+        {"kind": "opened", "at": "2026-09-03T13:33:00-04:00", "id": "a", "symbol": "SPY",
+         "structure": "bull_put", "quantity": 3},
+        {"kind": "closed", "at": "2026-09-03T13:55:00-04:00", "id": "a", "symbol": "SPY",
+         "structure": "bull_put", "pnl": 36.0, "reason": "profit-target"},
+        {"kind": "submitted", "at": "2026-09-03T14:10:00-04:00", "id": "b", "symbol": "SPY",
+         "structure": "bull_put", "entry_credit": 0.90,
+         "officer": {"provider": "featherless", "approved": True}},
+        {"kind": "opened", "at": "2026-09-03T14:11:00-04:00", "id": "b", "symbol": "SPY",
+         "structure": "bull_put", "quantity": 3},
+        {"kind": "closed", "at": "2026-09-03T14:40:00-04:00", "id": "b", "symbol": "SPY",
+         "structure": "bull_put", "pnl": -12.0, "reason": "stop-loss"},
+        {"kind": "submitted", "at": "2026-09-02T11:00:00-04:00", "id": "c", "symbol": "TLT",
+         "structure": "long_strangle", "entry_credit": None,
+         "officer": {"approved": False}},
+        {"kind": "order_stale_cancelled", "at": "2026-09-02T11:15:00-04:00", "id": "c",
+         "symbol": "TLT", "structure": "long_strangle"},
+        {"kind": "reconciled", "at": "2026-09-02T12:00:00+05:30", "detail": "note only"},
+    ],
+}
+
+
+def test_trade_history_grouped_rolls_up_by_symbol_and_structure() -> None:
+    g = ad.trade_history_grouped(GROUP_SESSION)
+    by = {(r["symbol"], r["structure"]): r for r in g}
+    spy = by[("SPY", "bull_put")]
+    assert spy["submitted"] == 2 and spy["opened"] == 2 and spy["closed"] == 2
+    assert spy["qty"] == 3          # max quantity on any record (opened rows carry none)
+    assert spy["realized_pnl"] == pytest.approx(24.0)      # 36 - 12
+    assert spy["credit_lo"] == pytest.approx(0.83)
+    assert spy["credit_hi"] == pytest.approx(0.90)
+    assert spy["officer_ok"] == 2 and spy["officer_seen"] == 2
+    assert spy["first"] < spy["last"]
+
+
+def test_trade_history_grouped_counts_cancels_and_skips_notes() -> None:
+    g = ad.trade_history_grouped(GROUP_SESSION)
+    tlt = [r for r in g if r["symbol"] == "TLT"][0]
+    assert tlt["cancelled"] == 1
+    assert tlt["opened"] == 0 and tlt["closed"] == 0
+    assert tlt["realized_pnl"] == pytest.approx(0.0)
+    assert tlt["officer_seen"] == 1 and tlt["officer_ok"] == 0
+    # the 'reconciled' note row produced no group
+    assert all(r["symbol"] for r in g)
+
+
+def test_trade_history_grouped_sorted_oldest_last_activity_first() -> None:
+    g = ad.trade_history_grouped(GROUP_SESSION)
+    assert [r["symbol"] for r in g] == ["TLT", "SPY"]   # by last-activity ascending
+
+
+def test_trade_history_grouped_empty_session() -> None:
+    assert ad.trade_history_grouped({}) == []

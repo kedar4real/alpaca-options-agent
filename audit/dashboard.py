@@ -199,6 +199,7 @@ def load_all(_sig: tuple[float, ...]) -> dict:
         "veto": ad.veto_ratio(activity),
         "regimes": ad.regime_breakdown(activity),
         "trades": ad.trade_history(session),
+        "trades_grouped": ad.trade_history_grouped(session),
         "open_pos": ad.open_positions_detail(session),
         "run_mode": ad.latest_run_mode(activity),
         "equity_series": ad.equity_series(agent_log, session, snapshot),
@@ -492,25 +493,54 @@ with col3:
     st.markdown("#### 3 · The Evidence — the audit")
 
     trades = D["trades"]
-    st.markdown(f"**Trade History** &nbsp;·&nbsp; {len(trades)} lifecycle record(s)")
-    if trades:
-        tr_df = pd.DataFrame(trades)
-        show = tr_df[["when", "symbol", "structure", "qty", "credit", "width",
-                      "order_risk", "max_risk_allowed", "officer_provider", "officer_approved"]].copy()
-        show["when"] = show["when"].str.slice(0, 16).str.replace("T", " ")
-        show.columns = ["When", "Sym", "Structure", "Qty", "Credit", "Width",
-                        "Risk $", "Cap $", "Officer", "OK?"]
+    grouped = D["trades_grouped"]
+    st.markdown(f"**Trade History** &nbsp;·&nbsp; {len(grouped)} name/structure group(s), "
+                f"{len(trades)} raw records")
+    if grouped:
+        g_df = pd.DataFrame(grouped)
+        g_df["span"] = g_df["first"].str.slice(5, 10) + " → " + g_df["last"].str.slice(5, 10)
+        g_df["credit"] = g_df.apply(
+            lambda r: "—" if pd.isna(r["credit_lo"])
+            else (f"${r['credit_lo']:.2f}" if r["credit_lo"] == r["credit_hi"]
+                  else f"${r['credit_lo']:.2f}–{r['credit_hi']:.2f}"), axis=1)
+        g_df["officer"] = g_df.apply(
+            lambda r: "—" if not r["officer_seen"] else f"{r['officer_ok']}/{r['officer_seen']}", axis=1)
+        g_df["fills"] = g_df["opened"].astype(str) + " op / " + g_df["closed"].astype(str) + " cl"
+        show = g_df[["symbol", "structure", "submitted", "fills", "qty", "credit",
+                     "realized_pnl", "officer", "span"]].copy()
+        show.columns = ["Sym", "Structure", "Sub", "Fills", "Qty", "Credit",
+                        "Realized P&L", "Officer ✓", "Active span"]
         st.dataframe(
-            show.style.format(
-                {"Credit": "{:.2f}", "Width": "{:.2f}", "Risk $": "{:,.0f}", "Cap $": "{:,.0f}"},
-                na_rep="—",
-            ),
-            hide_index=True, width='stretch', height=300,
+            show.style.format({"Realized P&L": "${:+,.0f}"}).map(
+                lambda v: "color:#2f6b45" if isinstance(v, (int, float)) and v > 0
+                else ("color:#963f43" if isinstance(v, (int, float)) and v < 0 else None),
+                subset=["Realized P&L"]),
+            hide_index=True, width="stretch",
         )
+        _tot = sum(g["realized_pnl"] for g in grouped)
+        _ncl = sum(g["closes_with_pnl"] for g in grouped)
         st.caption(
-            "Every `Risk $` sits under its `Cap $` (1.5% of live equity at submit time) — "
-            "the per-trade invariant, enforced on every fill."
+            f"Grouped by name + structure. **Realized P&L ${_tot:+,.0f}** across {_ncl} "
+            "closed legs (`session.json` `history` → `closed.pnl`). "
+            "`Sub` = orders submitted, `Fills` = opened / closed, `Officer ✓` = "
+            "risk-officer approvals ÷ reviews. Same structure re-opened many times is the "
+            "15%-take-profit flip loop, not distinct ideas."
         )
+        with st.expander(f"Expand raw — all {len(trades)} lifecycle records"):
+            tr_df = pd.DataFrame(trades)
+            raw = tr_df[["when", "symbol", "structure", "qty", "credit", "width",
+                         "order_risk", "max_risk_allowed", "officer_provider",
+                         "officer_approved"]].copy()
+            raw["when"] = raw["when"].str.slice(0, 16).str.replace("T", " ")
+            raw.columns = ["When", "Sym", "Structure", "Qty", "Credit", "Width",
+                           "Risk $", "Cap $", "Officer", "OK?"]
+            st.dataframe(
+                raw.style.format(
+                    {"Credit": "{:.2f}", "Width": "{:.2f}", "Risk $": "{:,.0f}", "Cap $": "{:,.0f}"},
+                    na_rep="—"),
+                hide_index=True, width="stretch", height=320,
+            )
+            st.caption("Raw rows are de-duplicated by order id; `When` is log-local time.")
     else:
         st.info("No trades recorded in session.json history.")
 

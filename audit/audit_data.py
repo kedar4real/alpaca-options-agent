@@ -582,3 +582,64 @@ def decision_log_stage_counts(agent_log_text: str) -> dict:
     for _ts, _sym, _out, stg, _r in _DECISION_LINE_RE.findall(agent_log_text):
         counts[stg] = counts.get(stg, 0) + 1
     return {k: v for k, v in counts.items() if v} or {s: 0 for s in _DECISION_STAGES}
+
+
+# --------------------------------------------------------------------------- #
+# Trade-history rollup  (polish pass — NEW, additive)
+# --------------------------------------------------------------------------- #
+_CANCEL_KINDS = {"cancelled", "cancelled-unfilled", "order_stale_cancelled",
+                 "order_abandoned", "position_dropped"}
+
+
+def trade_history_grouped(session: dict) -> list[dict]:
+    """Collapse ``session['history']`` to one row per ``(symbol, structure)`` —
+    the churn rollup. Sorted by last-activity ascending.
+
+    Row: ``{symbol, structure, submitted, opened, closed, cancelled, qty,
+    first, last, credit_lo, credit_hi, realized_pnl, closes_with_pnl,
+    officer_ok, officer_seen}``. ``realized_pnl`` sums the ``pnl`` on
+    ``closed`` records; ``qty`` is the largest ``quantity`` seen on any record
+    in the group (``opened`` rows in this log carry none).
+    ``reconciled`` / note rows (no symbol) produce nothing.
+    """
+    groups: dict[tuple[str, str], dict] = {}
+    for h in session.get("history", []):
+        sym, struct, kind = h.get("symbol"), h.get("structure"), h.get("kind")
+        if not sym or not struct:
+            continue
+        g = groups.setdefault((sym, struct), {
+            "symbol": sym, "structure": struct,
+            "submitted": 0, "opened": 0, "closed": 0, "cancelled": 0,
+            "qty": 0, "first": None, "last": None,
+            "credit_lo": None, "credit_hi": None,
+            "realized_pnl": 0.0, "closes_with_pnl": 0,
+            "officer_ok": 0, "officer_seen": 0,
+        })
+        at = h.get("at")
+        if at:
+            g["first"] = at if g["first"] is None else min(g["first"], at)
+            g["last"] = at if g["last"] is None else max(g["last"], at)
+        q = h.get("quantity")
+        if q is not None and q == q:      # ignore None / NaN
+            g["qty"] = max(g["qty"], int(q))
+        if kind == "submitted":
+            g["submitted"] += 1
+            c = h.get("entry_credit")
+            if c is not None and c == c:  # ignore None / NaN
+                g["credit_lo"] = c if g["credit_lo"] is None else min(g["credit_lo"], c)
+                g["credit_hi"] = c if g["credit_hi"] is None else max(g["credit_hi"], c)
+            off = h.get("officer") or {}
+            if "approved" in off:
+                g["officer_seen"] += 1
+                g["officer_ok"] += 1 if off.get("approved") else 0
+        elif kind == "opened":
+            g["opened"] += 1
+        elif kind == "closed":
+            g["closed"] += 1
+            if h.get("pnl") is not None:
+                g["realized_pnl"] += float(h["pnl"])
+                g["closes_with_pnl"] += 1
+        elif kind in _CANCEL_KINDS:
+            g["cancelled"] += 1
+
+    return sorted(groups.values(), key=lambda r: r["last"] or "")

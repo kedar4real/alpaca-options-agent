@@ -530,6 +530,73 @@ with col3:
     )
 
 # --------------------------------------------------------------------------- #
+# 3b. CAGE COMPLIANCE — every trade sized under the 1.5% cap
+# --------------------------------------------------------------------------- #
+st.divider()
+st.markdown("### The cage held — every trade sized under its per-trade cap")
+
+_caged = [t for t in D["trades"]
+          if t.get("order_risk") is not None and t.get("max_risk_allowed") is not None]
+if _caged:
+    _cg = pd.DataFrame([
+        {
+            "i": i,
+            "trade": f"{i+1:02d} · {t['symbol']} {(t.get('structure') or '').replace('_', ' ')}",
+            "when": (t.get("when") or "")[:16].replace("T", " "),
+            "risk": float(t["order_risk"]),
+            "cap": float(t["max_risk_allowed"]),
+            "util": float(t["order_risk"]) / float(t["max_risk_allowed"]) * 100.0,
+        }
+        for i, t in enumerate(_caged)
+    ])
+    _under = int((_cg["util"] <= 100).sum())
+    _peak = _cg["util"].max()
+
+    cc1, cc2, cc3 = st.columns([1, 1, 2.6], gap="large")
+    cc1.metric("Trades under cap", f"{_under} / {len(_cg)}")
+    cc2.metric("Peak cap utilisation", f"{_peak:.1f}%",
+               help="Highest order_risk ÷ max_risk_allowed across every filled trade. Never ≥ 100%.")
+    cc3.markdown(
+        "<div style='padding-top:6px;color:#5c6472;font-size:13px'>"
+        "Each bar is one filled trade's <b>defined max loss</b> (<code>order_risk</code>) as a "
+        "percent of the <b>cap</b> in force at submit time (<code>max_risk_allowed</code> = "
+        f"{ad.PER_TRADE_CAP_PCT:.1f}% of live equity, halved under a macro-danger flag). "
+        "The dashed line is the cap; no bar reaches it.</div>",
+        unsafe_allow_html=True,
+    )
+
+    _rule = alt.Chart(pd.DataFrame({"y": [100]})).mark_rule(
+        color="#a5474a", strokeDash=[5, 4], strokeWidth=1.5).encode(y="y:Q")
+    _bars = (
+        alt.Chart(_cg)
+        .mark_bar()
+        .encode(
+            x=alt.X("i:O", title=None, axis=alt.Axis(labels=False, ticks=False)),
+            y=alt.Y("util:Q", title="cap utilisation (%)",
+                    scale=alt.Scale(domain=[0, 115]), axis=alt.Axis(grid=True)),
+            color=alt.Color("util:Q", scale=alt.Scale(scheme="yellowgreen", reverse=True,
+                            domain=[60, 100]), legend=None),
+            tooltip=[alt.Tooltip("trade:N", title="trade"),
+                     alt.Tooltip("when:N", title="submitted"),
+                     alt.Tooltip("risk:Q", title="defined risk", format="$,.0f"),
+                     alt.Tooltip("cap:Q", title="cap", format="$,.0f"),
+                     alt.Tooltip("util:Q", title="utilisation", format=".1f")],
+        )
+    )
+    cage_chart = (
+        (_bars + _rule).properties(height=230)
+        .configure_view(fill="#ffffff", stroke="#e4e7ec")
+        .configure_axis(labelColor="#5c6472", titleColor="#5c6472")
+    )
+    st.altair_chart(cage_chart, width="stretch")
+    st.caption(
+        f"{len(_cg)} filled trades carrying a recorded risk-gate check "
+        "(`session.json` `history` → `gates`). Ordered oldest → newest, left to right. "
+        "`risk_manager` re-checks `order_risk` against *live* equity at submit and blocks "
+        "anything over — which is why the bars stop at the line, not past it."
+    )
+
+# --------------------------------------------------------------------------- #
 # 4. THE QUANT EDGE — "the Gate is the Hero"
 # --------------------------------------------------------------------------- #
 st.divider()

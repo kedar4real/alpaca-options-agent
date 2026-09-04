@@ -187,6 +187,7 @@ def load_all(_sig: tuple[float, ...]) -> dict:
     audit_md = ad.load_text(AUDIT_MD_PATH)
     snapshot = ad.load_json(SNAPSHOT_PATH)
     closing_equity = float(snapshot.get("equity") or session.get("starting_equity") or 0.0)
+    base_equity = snapshot.get("account_base_value")
     return {
         "session": session,
         "activity": activity,
@@ -194,7 +195,8 @@ def load_all(_sig: tuple[float, ...]) -> dict:
         "audit_md": audit_md,
         "snapshot": snapshot,
         "closing_equity": closing_equity,
-        "summary": ad.account_summary(session, closing_equity, force_stopped_flat=True),
+        "summary": ad.account_summary(session, closing_equity, force_stopped_flat=True,
+                                       base_equity=base_equity),
         "context": ad.last_market_context(activity),
         "tickers": ad.ticker_metrics(activity, BASKET),
         "debates": ad.parse_debates(audit_md=audit_md, activity_text=activity),

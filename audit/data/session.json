@@ -1,0 +1,2000 @@
+{
+  "starting_equity": 99870.9,
+  "account_id": "PA3FCNG4S7EO",
+  "created_at": "2026-09-02T11:53:55.794126-04:00",
+  "trading_halted": false,
+  "open_condors": [],
+  "pending_orders": [],
+  "history": [
+    {
+      "kind": "opened",
+      "at": "2026-09-02T11:54:04.730196-04:00",
+      "id": "1ba139b6-27a1-4b83-93a2-9e52f7a211c4",
+      "symbol": "TLT",
+      "structure": "long_strangle",
+      "regime": "Regime OVERRIDE: MACRO_DANGER -> Long Strangle (vetoed short-vol iron_condor)",
+      "detail": "76x TLT long_strangle exp 2026-09-04 debit $0.26 width $0.00 [BP:TLT260904P00081500 BC:TLT260904C00082500]"
+    },
+    {
+      "kind": "opened",
+      "at": "2026-09-02T11:54:04.730196-04:00",
+      "id": "7f6d86db-b852-4bbe-bbf7-9781dd6c5cc3",
+      "symbol": "GLD",
+      "structure": "long_strangle",
+      "regime": "Regime B: Low IV / Range-Bound -> Long Strangle",
+      "detail": "13x GLD long_strangle exp 2026-09-03 debit $1.52 width $0.00 [BP:GLD260903P00397000 BC:GLD260903C00405000]"
+    },
+    {
+      "kind": "opened",
+      "at": "2026-09-02T12:00:23.414155-04:00",
+      "id": "40c244ba-77d2-4cd2-aac3-891c602164bc",
+      "symbol": "TLT",
+      "structure": "long_strangle",
+      "regime": "Regime OVERRIDE: MACRO_DANGER -> Long Strangle (vetoed short-vol iron_condor)",
+      "detail": "76x TLT long_strangle exp 2026-09-04 debit $0.26 width $0.00 [BP:TLT260904P00081500 BC:TLT260904C00082500]"
+    },
+    {
+      "kind": "opened",
+      "at": "2026-09-02T12:00:23.414155-04:00",
+      "id": "85c1364d-68d1-4e82-b4ac-196ae7a5a740",
+      "symbol": "GLD",
+      "structure": "long_strangle",
+      "regime": "Regime B: Low IV / Range-Bound -> Long Strangle",
+      "detail": "11x GLD long_strangle exp 2026-09-03 debit $1.69 width $0.00 [BP:GLD260903P00398000 BC:GLD260903C00405000]"
+    },
+    {
+      "kind": "reconciled",
+      "at": "2026-09-02T21:57:17.229516+05:30",
+      "detail": "JAM RESET: broker flat (equity 99648.60). Cancelled stuck orders 85c1364d/40c244ba/1ba139b6, closed 13x GLD260903C00405000 naked call. Cleared 4 phantom/partial tracked positions: ['1ba139b6', '7f6d86db', '40c244ba', '85c1364d']."
+    },
+    {
+      "kind": "submitted",
+      "at": "2026-09-02T12:43:07.445146-04:00",
+      "id": "f058567f-6b43-4055-a2e8-e738044572c9",
+      "symbol": "IWM",
+      "structure": "long_strangle",
+      "regime": "Regime OVERRIDE: MACRO_DANGER -> Long Strangle (vetoed short-vol iron_condor)",
+      "detail": "16x IWM long_strangle exp 2026-09-04 debit $1.19 width $0.00 [BP:IWM260904P00290000 BC:IWM260904C00296000]"
+    },
+    {
+      "kind": "submitted",
+      "at": "2026-09-02T12:43:07.445146-04:00",
+      "id": "043272d5-c40f-49ec-b34d-ce14e0af532a",
+      "symbol": "SPY",
+      "structure": "long_strangle",
+      "regime": "Regime OVERRIDE: MACRO_DANGER -> Long Strangle (vetoed short-vol iron_condor)",
+      "detail": "8x SPY long_strangle exp 2026-09-04 debit $2.25 width $0.00 [BP:SPY260904P00760000 BC:SPY260904C00770000]"
+    },
+    {
+      "kind": "submitted",
+      "at": "2026-09-02T12:43:07.445146-04:00",
+      "id": "94fba861-fe95-4bd2-8dcd-59b5ab6de350",
+      "symbol": "GLD",
+      "structure": "long_strangle",
+      "regime": "Regime B: Low IV / Range-Bound -> Long Strangle",
+      "detail": "8x GLD long_strangle exp 2026-09-04 debit $2.45 width $0.00 [BP:GLD260904P00395000 BC:GLD260904C00406000]"
+    },
+    {
+      "kind": "opened",
+      "at": "2026-09-02T12:48:55.904396-04:00",
+      "id": "f058567f-6b43-4055-a2e8-e738044572c9",
+      "symbol": "IWM",
+      "structure": "long_strangle",
+      "regime": null,
+      "detail": "fill confirmed \u2014 16x IWM long_strangle"
+    },
+    {
+      "kind": "opened",
+      "at": "2026-09-02T12:48:55.904396-04:00",
+      "id": "043272d5-c40f-49ec-b34d-ce14e0af532a",
+      "symbol": "SPY",
+      "structure": "long_strangle",
+      "regime": null,
+      "detail": "fill confirmed \u2014 8x SPY long_strangle"
+    },
+    {
+      "kind": "submitted",
+      "at": "2026-09-02T12:48:55.904396-04:00",
+      "id": "502fa025-f0e6-4c20-bd57-0ac163484aff",
+      "symbol": "IWM",
+      "structure": "long_strangle",
+      "regime": "Regime OVERRIDE: MACRO_DANGER -> Long Strangle (vetoed short-vol iron_condor)",
+      "detail": "16x IWM long_strangle exp 2026-09-04 debit $1.21 width $0.00 [BP:IWM260904P00290000 BC:IWM260904C00296000]"
+    },
+    {
+      "kind": "order_stale_cancelled",
+      "at": "2026-09-02T12:54:27.895148-04:00",
+      "id": "94fba861-fe95-4bd2-8dcd-59b5ab6de350",
+      "symbol": "GLD",
+      "structure": "long_strangle",
+      "cycles": 2
+    },
+    {
+      "kind": "opened",
+      "at": "2026-09-02T12:54:27.895148-04:00",
+      "id": "502fa025-f0e6-4c20-bd57-0ac163484aff",
+      "symbol": "IWM",
+      "structure": "long_strangle",
+      "regime": null,
+      "detail": "fill confirmed \u2014 16x IWM long_strangle"
+    },
+    {
+      "kind": "reconciled",
+      "at": "2026-09-02T22:36:32.567165+05:30",
+      "detail": "Commit D book compliance: trimmed IWM strangle 32->16, GLD order gone, SPY 8x kept. open_condors rebuilt to the 2 real strangles (IWM 16x @ -1.185, SPY 8x @ -2.25)."
+    },
+    {
+      "kind": "closed",
+      "at": "2026-09-03T09:34:40.514503-04:00",
+      "id": "f058567f-6b43-4055-a2e8-e738044572c9",
+      "symbol": "IWM",
+      "structure": "long_strangle",
+      "reason": "expiry",
+      "pnl": 144.0,
+      "quantity": 16
+    },
+    {
+      "kind": "closed",
+      "at": "2026-09-03T09:34:40.514503-04:00",
+      "id": "043272d5-c40f-49ec-b34d-ce14e0af532a",
+      "symbol": "SPY",
+      "structure": "long_strangle",
+      "reason": "expiry",
+      "pnl": 59.2,
+      "quantity": 8
+    },
+    {
+      "kind": "submitted",
+      "at": "2026-09-03T09:34:40.514503-04:00",
+      "id": "0eddceaa-058f-4af1-835a-3585fc2d0cf7",
+      "symbol": "XLE",
+      "structure": "long_strangle",
+      "regime": "Regime OVERRIDE: MACRO_DANGER -> Long Strangle (vetoed short-vol iron_condor)",
+      "detail": "60x XLE long_strangle exp 2026-09-04 debit $0.33 width $0.00 [BP:XLE260904P00064500 BC:XLE260904C00066000]",
+      "quantity": 60,
+      "entry_credit": -0.33,
+      "expiry": "2026-09-04",
+      "legs": [
+        "XLE260904P00064500",
+        "XLE260904C00066000"
+      ],
+      "gates": {
+        "iv_regime_mode": "hackathon_static",
+        "underlying_price": 65.005,
+        "iv_rv_spread": 0.1757,
+        "credit_to_width": null,
+        "max_loss_per_contract": 33.0,
+        "order_risk": 1980.0,
+        "max_risk_allowed": 1993.4816
+      },
+      "officer": {
+        "provider": "featherless",
+        "approved": true,
+        "thesis": "The proposed long strangle fits the MACRO_DANGER regime, as implied volatility (IV) is significantly higher than realized volatility (RV), indicating a favorable environment for buying volatility. The macro context and recent headlines do not suggest any high-impact events that would warrant vetoing the trade."
+      }
+    },
+    {
+      "kind": "submitted",
+      "at": "2026-09-03T09:34:40.514503-04:00",
+      "id": "e1ebb0f0-27a0-4bfc-a6a0-d23a6aada58f",
+      "symbol": "XLK",
+      "structure": "long_strangle",
+      "regime": "Regime OVERRIDE: MACRO_DANGER -> Long Strangle (vetoed short-vol iron_condor)",
+      "detail": "20x XLK long_strangle exp 2026-09-04 debit $0.97 width $0.00 [BP:XLK260904P00181000 BC:XLK260904C00186000]",
+      "quantity": 20,
+      "entry_credit": -0.975,
+      "expiry": "2026-09-04",
+      "legs": [
+        "XLK260904P00181000",
+        "XLK260904C00186000"
+      ],
+      "gates": {
+        "iv_regime_mode": "hackathon_static",
+        "underlying_price": 183.09500000000003,
+        "iv_rv_spread": 0.1422,
+        "credit_to_width": null,
+        "max_loss_per_contract": 97.5,
+        "order_risk": 1950.0,
+        "max_risk_allowed": 1993.4816
+      },
+      "officer": {
+        "provider": "featherless",
+        "approved": true,
+        "thesis": "The long strangle fits the MACRO_DANGER regime, as implied volatility is significantly higher than realized volatility, suggesting a potential for increased market movement. The neutral RSI and contango VIX term structure further support this trade, indicating no immediate market stress."
+      }
+    },
+    {
+      "kind": "order_stale_cancelled",
+      "at": "2026-09-03T09:47:07.897195-04:00",
+      "id": "0eddceaa-058f-4af1-835a-3585fc2d0cf7",
+      "symbol": "XLE",
+      "structure": "long_strangle",
+      "cycles": 2
+    },
+    {
+      "kind": "order_stale_cancelled",
+      "at": "2026-09-03T09:47:07.897195-04:00",
+      "id": "e1ebb0f0-27a0-4bfc-a6a0-d23a6aada58f",
+      "symbol": "XLK",
+      "structure": "long_strangle",
+      "cycles": 2
+    },
+    {
+      "kind": "submitted",
+      "at": "2026-09-03T09:47:07.897195-04:00",
+      "id": "083fe727-9459-4f10-aeae-2c7554e4b424",
+      "symbol": "SLV",
+      "structure": "long_strangle",
+      "regime": "Regime OVERRIDE: MACRO_DANGER -> Long Strangle (vetoed short-vol iron_condor)",
+      "detail": "44x SLV long_strangle exp 2026-09-04 debit $0.45 width $0.00 [BP:SLV260904P00058500 BC:SLV260904C00061000]",
+      "quantity": 44,
+      "entry_credit": -0.44999999999999996,
+      "expiry": "2026-09-04",
+      "legs": [
+        "SLV260904P00058500",
+        "SLV260904C00061000"
+      ],
+      "gates": {
+        "iv_regime_mode": "hackathon_static",
+        "underlying_price": 59.68,
+        "iv_rv_spread": 0.1828,
+        "credit_to_width": null,
+        "max_loss_per_contract": 44.99999999999999,
+        "order_risk": 1979.9999999999998,
+        "max_risk_allowed": 1993.6176
+      },
+      "officer": {
+        "provider": "debate/featherless",
+        "approved": true,
+        "thesis": "The proposed long strangle on SLV is well-aligned with the MACRO_DANGER regime, leveraging the elevated IV (0.5445) compared to the realized volatility (0.3617). The trade fits the current market conditions, where implied volatility is rich, and the upcoming NFP report could catalyze further volatility, providing a robust edge for this structured trade."
+      }
+    },
+    {
+      "kind": "submitted",
+      "at": "2026-09-03T09:47:07.897195-04:00",
+      "id": "ea3fc32f-da92-4c30-8127-573310d7dbd1",
+      "symbol": "XLK",
+      "structure": "long_strangle",
+      "regime": "Regime OVERRIDE: MACRO_DANGER -> Long Strangle (vetoed short-vol iron_condor)",
+      "detail": "21x XLK long_strangle exp 2026-09-04 debit $0.93 width $0.00 [BP:XLK260904P00181000 BC:XLK260904C00186000]",
+      "quantity": 21,
+      "entry_credit": -0.925,
+      "expiry": "2026-09-04",
+      "legs": [
+        "XLK260904P00181000",
+        "XLK260904C00186000"
+      ],
+      "gates": {
+        "iv_regime_mode": "hackathon_static",
+        "underlying_price": 184.03500000000003,
+        "iv_rv_spread": 0.1619,
+        "credit_to_width": null,
+        "max_loss_per_contract": 92.5,
+        "order_risk": 1942.5,
+        "max_risk_allowed": 1993.6176
+      },
+      "officer": {
+        "provider": "featherless",
+        "approved": true,
+        "thesis": "The long strangle fits the MACRO_DANGER regime and the elevated IV-RV spread, indicating a favorable environment for buying volatility. The neutral RSI and contango VIX term structure further support this trade, as they suggest a balanced and non-stressed market condition."
+      }
+    },
+    {
+      "kind": "order_stale_cancelled",
+      "at": "2026-09-03T09:59:40.718749-04:00",
+      "id": "083fe727-9459-4f10-aeae-2c7554e4b424",
+      "symbol": "SLV",
+      "structure": "long_strangle",
+      "cycles": 2
+    },
+    {
+      "kind": "order_stale_cancelled",
+      "at": "2026-09-03T09:59:40.718749-04:00",
+      "id": "ea3fc32f-da92-4c30-8127-573310d7dbd1",
+      "symbol": "XLK",
+      "structure": "long_strangle",
+      "cycles": 2
+    },
+    {
+      "kind": "submitted",
+      "at": "2026-09-03T09:59:40.718749-04:00",
+      "id": "411ec32b-40c6-491b-a588-67339529442b",
+      "symbol": "SLV",
+      "structure": "long_strangle",
+      "regime": "Regime OVERRIDE: MACRO_DANGER -> Long Strangle (vetoed short-vol iron_condor)",
+      "detail": "44x SLV long_strangle exp 2026-09-04 debit $0.45 width $0.00 [BP:SLV260904P00058500 BC:SLV260904C00061000]",
+      "quantity": 44,
+      "entry_credit": -0.445,
+      "expiry": "2026-09-04",
+      "legs": [
+        "SLV260904P00058500",
+        "SLV260904C00061000"
+      ],
+      "gates": {
+        "iv_regime_mode": "hackathon_static",
+        "underlying_price": 59.78,
+        "iv_rv_spread": 0.1698,
+        "credit_to_width": null,
+        "max_loss_per_contract": 44.5,
+        "order_risk": 1958.0,
+        "max_risk_allowed": 1993.6176
+      },
+      "officer": {
+        "provider": "debate/featherless",
+        "approved": true,
+        "thesis": "The long strangle aligns well with the MACRO_DANGER regime, leveraging the elevated IV (0.537) compared to RV (0.3676). The trade is within the 1.5% per-trade risk limit, and the current exposure is low, making it a prudent addition to the portfolio in a volatile environment. The neutral RSI and contango VIX term structure further support this decision."
+      }
+    },
+    {
+      "kind": "submitted",
+      "at": "2026-09-03T09:59:40.718749-04:00",
+      "id": "0771d4cf-2f73-4f24-a540-08dd91d04540",
+      "symbol": "XLK",
+      "structure": "long_strangle",
+      "regime": "Regime OVERRIDE: MACRO_DANGER -> Long Strangle (vetoed short-vol iron_condor)",
+      "detail": "18x XLK long_strangle exp 2026-09-04 debit $1.06 width $0.00 [BP:XLK260904P00181000 BC:XLK260904C00186000]",
+      "quantity": 18,
+      "entry_credit": -1.06,
+      "expiry": "2026-09-04",
+      "legs": [
+        "XLK260904P00181000",
+        "XLK260904C00186000"
+      ],
+      "gates": {
+        "iv_regime_mode": "hackathon_static",
+        "underlying_price": 184.075,
+        "iv_rv_spread": 0.1425,
+        "credit_to_width": null,
+        "max_loss_per_contract": 106.0,
+        "order_risk": 1908.0,
+        "max_risk_allowed": 1993.6176
+      },
+      "officer": {
+        "provider": "featherless",
+        "approved": true,
+        "thesis": "The proposed long str0angle trade aligns well with the current MACRO_DANGER regime, which favors long-v0latility structures due to elevated implied volatility (IV 0.3745) over realized volatility (RV 0.232). The neutral 14-day RSI (52.1) and the VIX term structure in contango!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+      }
+    },
+    {
+      "kind": "order_stale_cancelled",
+      "at": "2026-09-03T10:13:08.467448-04:00",
+      "id": "411ec32b-40c6-491b-a588-67339529442b",
+      "symbol": "SLV",
+      "structure": "long_strangle",
+      "cycles": 2
+    },
+    {
+      "kind": "order_stale_cancelled",
+      "at": "2026-09-03T10:13:08.467448-04:00",
+      "id": "0771d4cf-2f73-4f24-a540-08dd91d04540",
+      "symbol": "XLK",
+      "structure": "long_strangle",
+      "cycles": 2
+    },
+    {
+      "kind": "submitted",
+      "at": "2026-09-03T10:13:08.467448-04:00",
+      "id": "5ab322a9-2d0d-4219-b4d2-51e2ff6ab1f1",
+      "symbol": "SLV",
+      "structure": "long_strangle",
+      "regime": "Regime OVERRIDE: MACRO_DANGER -> Long Strangle (vetoed short-vol iron_condor)",
+      "detail": "35x SLV long_strangle exp 2026-09-04 debit $0.56 width $0.00 [BP:SLV260904P00059000 BC:SLV260904C00061000]",
+      "quantity": 35,
+      "entry_credit": -0.565,
+      "expiry": "2026-09-04",
+      "legs": [
+        "SLV260904P00059000",
+        "SLV260904C00061000"
+      ],
+      "gates": {
+        "iv_regime_mode": "hackathon_static",
+        "underlying_price": 59.92,
+        "iv_rv_spread": 0.1495,
+        "credit_to_width": null,
+        "max_loss_per_contract": 56.49999999999999,
+        "order_risk": 1977.4999999999998,
+        "max_risk_allowed": 1993.6176
+      },
+      "officer": {
+        "provider": "debate/featherless",
+        "approved": true,
+        "thesis": "The proposed long str00 \\[sic, corrected to \"strangle\"\\] on SLV is well-aligned with the MACRO_DANGER regime, taking advantage of the elevated IV (0.5151) relative to the realized volatility (0.3656). The neutral RSI (56.6) suggests no strong directional bias, and while the NFP report and geopolitical tensions pose risks, they also present opportunities for volatility expansion, which benefits a long strangle structure. The trade's risk is manageable within the 1.98% of equity limit, making it a prudent addition to the portfolio."
+      }
+    },
+    {
+      "kind": "submitted",
+      "at": "2026-09-03T10:13:08.467448-04:00",
+      "id": "e5579bcd-48aa-485e-87e7-504b7f2ec241",
+      "symbol": "XLK",
+      "structure": "long_strangle",
+      "regime": "Regime OVERRIDE: MACRO_DANGER -> Long Strangle (vetoed short-vol iron_condor)",
+      "detail": "17x XLK long_strangle exp 2026-09-04 debit $1.14 width $0.00 [BP:XLK260904P00182000 BC:XLK260904C00186000]",
+      "quantity": 17,
+      "entry_credit": -1.1400000000000001,
+      "expiry": "2026-09-04",
+      "legs": [
+        "XLK260904P00182000",
+        "XLK260904C00186000"
+      ],
+      "gates": {
+        "iv_regime_mode": "hackathon_static",
+        "underlying_price": 183.98000000000002,
+        "iv_rv_spread": 0.1083,
+        "credit_to_width": null,
+        "max_loss_per_contract": 114.00000000000001,
+        "order_risk": 1938.0000000000002,
+        "max_risk_allowed": 1993.6176
+      },
+      "officer": {
+        "provider": "featherless",
+        "approved": true,
+        "thesis": "The proposed long strangle fits the current MACRO_DANGER regime, as implied volatility (IV) is significantly higher than realized volatility (RV), indicating a favorable environment for buying volatility. The neutral 14-day RSI (51.8) suggests that XLK is not overbought or oversold, supporting the neutral stance of a long strangle."
+      }
+    },
+    {
+      "kind": "opened",
+      "at": "2026-09-03T10:30:08.409647-04:00",
+      "id": "5ab322a9-2d0d-4219-b4d2-51e2ff6ab1f1",
+      "symbol": "SLV",
+      "structure": "long_strangle",
+      "regime": null,
+      "detail": "fill confirmed \u2014 35x SLV long_strangle"
+    },
+    {
+      "kind": "order_abandoned",
+      "at": "2026-09-03T10:30:08.409647-04:00",
+      "id": "e5579bcd-48aa-485e-87e7-504b7f2ec241",
+      "symbol": "XLK",
+      "structure": "long_strangle",
+      "reason": "canceled"
+    },
+    {
+      "kind": "submitted",
+      "at": "2026-09-03T10:30:08.409647-04:00",
+      "id": "c7ac8c91-d586-4d0d-b7e7-2e007cc0f6a7",
+      "symbol": "TLT",
+      "structure": "iron_condor",
+      "regime": "Regime A: High Volatility -> Iron Condor",
+      "detail": "68x TLT iron_condor exp 2026-09-04 credit $0.21 width $0.50 [SP:TLT260904P00082000 BP:TLT260904P00081500 SC:TLT260904C00082500 BC:TLT260904C00083000]",
+      "quantity": 68,
+      "entry_credit": 0.21000000000000005,
+      "expiry": "2026-09-04",
+      "legs": [
+        "TLT260904P00082000",
+        "TLT260904P00081500",
+        "TLT260904C00082500",
+        "TLT260904C00083000"
+      ],
+      "gates": {
+        "iv_regime_mode": "hackathon_static",
+        "underlying_price": 82.235,
+        "iv_rv_spread": 0.0613,
+        "credit_to_width": 0.4200000000000001,
+        "max_loss_per_contract": 28.999999999999993,
+        "order_risk": 1971.9999999999995,
+        "max_risk_allowed": 1992.1476000000002
+      },
+      "officer": {
+        "provider": "featherless",
+        "approved": true,
+        "thesis": "The proposed iron condor trade aligns well with the high volatility regime, as indicated by the elevated IV relative to RV and the positive IV-RV spread. The neutral RSI and contango VIX term structure further support a range-bound, premium-selling strategy, making this trade sound given the current market conditions."
+      }
+    },
+    {
+      "kind": "submitted",
+      "at": "2026-09-03T10:30:08.409647-04:00",
+      "id": "9a908ec0-29c4-4a04-a7c7-519b206bad42",
+      "symbol": "DIA",
+      "structure": "iron_condor",
+      "regime": "Regime A: High Volatility -> Iron Condor",
+      "detail": "8x DIA iron_condor exp 2026-09-04 credit $1.02 width $3.50 [SP:DIA260904P00531000 BP:DIA260904P00527500 SC:DIA260904C00536000 BC:DIA260904C00539000]",
+      "quantity": 8,
+      "entry_credit": 1.025,
+      "expiry": "2026-09-04",
+      "legs": [
+        "DIA260904P00531000",
+        "DIA260904P00527500",
+        "DIA260904C00536000",
+        "DIA260904C00539000"
+      ],
+      "gates": {
+        "iv_regime_mode": "hackathon_static",
+        "underlying_price": 533.595,
+        "iv_rv_spread": 0.053,
+        "credit_to_width": 0.2928571428571428,
+        "max_loss_per_contract": 247.5,
+        "order_risk": 1980.0,
+        "max_risk_allowed": 1992.1476000000002
+      },
+      "officer": {
+        "provider": "featherless",
+        "approved": true,
+        "thesis": "The trade aligns with the high volatility regime, as indicated by the elevated IV and positive IV-RV spread. The neutral 14-day RSI suggests the market is not overbought or oversold, making the iron condor structure appropriate for capturing premium in a range-bound environment."
+      }
+    },
+    {
+      "kind": "opened",
+      "at": "2026-09-03T10:33:28.206424-04:00",
+      "id": "c7ac8c91-d586-4d0d-b7e7-2e007cc0f6a7",
+      "symbol": "TLT",
+      "structure": "iron_condor",
+      "regime": null,
+      "detail": "fill confirmed \u2014 68x TLT iron_condor"
+    },
+    {
+      "kind": "opened",
+      "at": "2026-09-03T10:33:28.206424-04:00",
+      "id": "9a908ec0-29c4-4a04-a7c7-519b206bad42",
+      "symbol": "DIA",
+      "structure": "iron_condor",
+      "regime": null,
+      "detail": "fill confirmed \u2014 8x DIA iron_condor"
+    },
+    {
+      "kind": "position_dropped",
+      "at": "2026-09-03T10:33:28.206424-04:00",
+      "id": "5ab322a9-2d0d-4219-b4d2-51e2ff6ab1f1",
+      "symbol": "SLV",
+      "structure": "long_strangle",
+      "reason": "broker holds none of its legs"
+    },
+    {
+      "kind": "closed",
+      "at": "2026-09-03T10:33:28.206424-04:00",
+      "id": "c7ac8c91-d586-4d0d-b7e7-2e007cc0f6a7",
+      "symbol": "TLT",
+      "structure": "iron_condor",
+      "reason": "profit-target",
+      "pnl": 476.0,
+      "quantity": 68
+    },
+    {
+      "kind": "closed",
+      "at": "2026-09-03T10:33:28.206424-04:00",
+      "id": "9a908ec0-29c4-4a04-a7c7-519b206bad42",
+      "symbol": "DIA",
+      "structure": "iron_condor",
+      "reason": "expiry",
+      "pnl": 56.0,
+      "quantity": 8
+    },
+    {
+      "kind": "submitted",
+      "at": "2026-09-03T10:33:28.206424-04:00",
+      "id": "9db9ad1b-5bbb-4f66-9c0f-8de98930f19f",
+      "symbol": "XLK",
+      "structure": "iron_condor",
+      "regime": "Regime A: High Volatility -> Iron Condor",
+      "detail": "8x XLK iron_condor exp 2026-09-04 credit $0.75 width $3.00 [SP:XLK260904P00182000 BP:XLK260904P00179000 SC:XLK260904C00186000 BC:XLK260904C00188000]",
+      "quantity": 8,
+      "entry_credit": 0.7549999999999999,
+      "expiry": "2026-09-04",
+      "legs": [
+        "XLK260904P00182000",
+        "XLK260904P00179000",
+        "XLK260904C00186000",
+        "XLK260904C00188000"
+      ],
+      "gates": {
+        "iv_regime_mode": "hackathon_static",
+        "underlying_price": 184.015,
+        "iv_rv_spread": 0.1367,
+        "credit_to_width": 0.25166666666666665,
+        "max_loss_per_contract": 224.5,
+        "order_risk": 1796.0,
+        "max_risk_allowed": 1982.7156
+      },
+      "officer": {
+        "provider": "featherless",
+        "approved": true,
+        "thesis": "The proposed iron condor trade aligns well with the high-volatility regime, as indicated by the elevated IV and positive IV-RV spread. The neutral 14-day RSI suggests the market is not overbought or oversold, making this a suitable environment for a range-bound, premium-selling strategy."
+      }
+    },
+    {
+      "kind": "submitted",
+      "at": "2026-09-03T10:33:28.206424-04:00",
+      "id": "d9b7efb8-845f-42ad-8d1d-d17cae2e3a98",
+      "symbol": "QQQ",
+      "structure": "iron_condor",
+      "regime": "Regime A: High Volatility -> Iron Condor",
+      "detail": "3x QQQ iron_condor exp 2026-09-04 credit $1.77 width $7.00 [SP:QQQ260904P00708000 BP:QQQ260904P00701000 SC:QQQ260904C00717000 BC:QQQ260904C00721000]",
+      "quantity": 3,
+      "entry_credit": 1.7749999999999997,
+      "expiry": "2026-09-04",
+      "legs": [
+        "QQQ260904P00708000",
+        "QQQ260904P00701000",
+        "QQQ260904C00717000",
+        "QQQ260904C00721000"
+      ],
+      "gates": {
+        "iv_regime_mode": "hackathon_static",
+        "underlying_price": 712.1800000000001,
+        "iv_rv_spread": 0.071,
+        "credit_to_width": 0.2535714285714285,
+        "max_loss_per_contract": 522.5,
+        "order_risk": 1567.5,
+        "max_risk_allowed": 1982.7156
+      },
+      "officer": {
+        "provider": "featherless",
+        "approved": true,
+        "thesis": "The iron condor structure fits the high-volatility regime with IV significantly higher than RV, indicating rich premiums. The neutral RSI and contango VIX term structure suggest a stable market environment suitable for this defined-risk, premium-selling strategy."
+      }
+    },
+    {
+      "kind": "submitted",
+      "at": "2026-09-03T10:33:28.206424-04:00",
+      "id": "26a3838a-1623-4602-becf-b9011efc2b75",
+      "symbol": "TLT",
+      "structure": "iron_condor",
+      "regime": "Regime A: High Volatility -> Iron Condor",
+      "detail": "26x TLT iron_condor exp 2026-09-04 credit $0.24 width $1.00 [SP:TLT260904P00082000 BP:TLT260904P00081000 SC:TLT260904C00082500 BC:TLT260904C00083500]",
+      "quantity": 26,
+      "entry_credit": 0.24000000000000005,
+      "expiry": "2026-09-04",
+      "legs": [
+        "TLT260904P00082000",
+        "TLT260904P00081000",
+        "TLT260904C00082500",
+        "TLT260904C00083500"
+      ],
+      "gates": {
+        "iv_regime_mode": "hackathon_static",
+        "underlying_price": 82.235,
+        "iv_rv_spread": 0.0566,
+        "credit_to_width": 0.24000000000000005,
+        "max_loss_per_contract": 76.0,
+        "order_risk": 1976.0,
+        "max_risk_allowed": 1982.7156
+      },
+      "officer": {
+        "provider": "featherless",
+        "approved": true,
+        "thesis": "The proposed iron cond0r trade aligns well with the current high-volatility regime and the elevated IV relative00 to RV. The neutral 14-day RSI and the absence of any high-impact macro events or extreme market conditions support the trade."
+      }
+    },
+    {
+      "kind": "submitted",
+      "at": "2026-09-03T10:33:28.206424-04:00",
+      "id": "163251a9-6be7-4be0-9ae6-d1cfe4c4f2ba",
+      "symbol": "DIA",
+      "structure": "iron_condor",
+      "regime": "Regime A: High Volatility -> Iron Condor",
+      "detail": "7x DIA iron_condor exp 2026-09-04 credit $1.23 width $4.00 [SP:DIA260904P00532000 BP:DIA260904P00528000 SC:DIA260904C00536000 BC:DIA260904C00539000]",
+      "quantity": 7,
+      "entry_credit": 1.225,
+      "expiry": "2026-09-04",
+      "legs": [
+        "DIA260904P00532000",
+        "DIA260904P00528000",
+        "DIA260904C00536000",
+        "DIA260904C00539000"
+      ],
+      "gates": {
+        "iv_regime_mode": "hackathon_static",
+        "underlying_price": 533.5450000000001,
+        "iv_rv_spread": 0.0516,
+        "credit_to_width": 0.30625,
+        "max_loss_per_contract": 277.5,
+        "order_risk": 1942.5,
+        "max_risk_allowed": 1982.7156
+      },
+      "officer": {
+        "provider": "featherless",
+        "approved": true,
+        "thesis": "The trade fits the high-volatility regime with IV significantly above RV, and the neutral RSI suggests a range-bound environment ideal for an iron condor. The VIX term structure is in contango, indicating a normal market state, and there are no imminent high-impact events or material changes affecting DIA."
+      }
+    },
+    {
+      "kind": "reconciled",
+      "at": "2026-09-03T20:07:49.604551+05:30",
+      "detail": "BLITZ ABORT: agent stopped, all orders cancelled, book flattened leg-by-leg. Broker confirmed flat, all cash. Cleared stale open/pending from session state."
+    },
+    {
+      "kind": "submitted",
+      "at": "2026-09-03T12:18:23.480582-04:00",
+      "id": "7fc7dff2-73b9-406f-9354-a87be308e7e3",
+      "symbol": "SLV",
+      "structure": "iron_condor",
+      "regime": "Regime A: High Volatility -> Iron Condor",
+      "detail": "26x SLV iron_condor exp 2026-09-04 credit $0.25 width $1.00 [SP:SLV260904P00059500 BP:SLV260904P00058500 SC:SLV260904C00062000 BC:SLV260904C00063000]",
+      "quantity": 26,
+      "entry_credit": 0.25000000000000006,
+      "expiry": "2026-09-04",
+      "legs": [
+        "SLV260904P00059500",
+        "SLV260904P00058500",
+        "SLV260904C00062000",
+        "SLV260904C00063000"
+      ],
+      "gates": {
+        "iv_regime_mode": "hackathon_static",
+        "underlying_price": 60.665,
+        "iv_rv_spread": 0.1172,
+        "credit_to_width": 0.25000000000000006,
+        "max_loss_per_contract": 75.0,
+        "order_risk": 1950.0,
+        "max_risk_allowed": 1960.8076
+      },
+      "officer": {
+        "provider": "featherless",
+        "approved": true,
+        "thesis": "The proposed iron condor trade aligns well with the high-volatility regime, as evidenced by the elevated IV (0.506) and positive IV-RV spread (+0.117). The neutral 14-day RSI (58.5) suggests that SLV is not overbought or oversold, making it suitable for a range-bound, premium-selling structure. Additionally, the VIX term structure is in contango, indicating a normal market environment, and there are no imminent high-impact events or material news that would significantly alter the trade's risk profile."
+      }
+    },
+    {
+      "kind": "opened",
+      "at": "2026-09-03T12:24:24.194040-04:00",
+      "id": "7fc7dff2-73b9-406f-9354-a87be308e7e3",
+      "symbol": "SLV",
+      "structure": "iron_condor",
+      "regime": null,
+      "detail": "fill confirmed \u2014 26x SLV iron_condor"
+    },
+    {
+      "kind": "closed",
+      "at": "2026-09-03T12:24:24.194040-04:00",
+      "id": "7fc7dff2-73b9-406f-9354-a87be308e7e3",
+      "symbol": "SLV",
+      "structure": "iron_condor",
+      "reason": "expiry",
+      "pnl": 156.0,
+      "quantity": 26
+    },
+    {
+      "kind": "submitted",
+      "at": "2026-09-03T12:24:24.194040-04:00",
+      "id": "ff0afc88-8564-422f-95ec-a3e0bb8ed62f",
+      "symbol": "SLV",
+      "structure": "iron_condor",
+      "regime": "Regime A: High Volatility -> Iron Condor",
+      "detail": "16x SLV iron_condor exp 2026-09-04 credit $0.31 width $1.50 [SP:SLV260904P00059500 BP:SLV260904P00058500 SC:SLV260904C00062000 BC:SLV260904C00063500]",
+      "quantity": 16,
+      "entry_credit": 0.31499999999999995,
+      "expiry": "2026-09-04",
+      "legs": [
+        "SLV260904P00059500",
+        "SLV260904P00058500",
+        "SLV260904C00062000",
+        "SLV260904C00063500"
+      ],
+      "gates": {
+        "iv_regime_mode": "hackathon_static",
+        "underlying_price": 60.635000000000005,
+        "iv_rv_spread": 0.1214,
+        "credit_to_width": 0.20999999999999996,
+        "max_loss_per_contract": 118.5,
+        "order_risk": 1896.0,
+        "max_risk_allowed": 1956.5956
+      },
+      "officer": {
+        "provider": "debate/featherless",
+        "approved": true,
+        "thesis": "The iron condor fits the high-volatility regime with a significant IV-RV spread, suggesting rich premiums. The neutral RSI and contango VIX term structure indicate a stable market environment. While the upcoming NFP report introduces some uncertainty, the defined-risk nature of the trade and the current neutral positioning justify the approval."
+      }
+    },
+    {
+      "kind": "submitted",
+      "at": "2026-09-03T12:24:24.194040-04:00",
+      "id": "b9979f58-7def-47e7-9d1a-af626c02690f",
+      "symbol": "XLK",
+      "structure": "iron_condor",
+      "regime": "Regime A: High Volatility -> Iron Condor",
+      "detail": "10x XLK iron_condor exp 2026-09-04 credit $0.57 width $2.50 [SP:XLK260904P00183000 BP:XLK260904P00182000 SC:XLK260904C00187500 BC:XLK260904C00190000]",
+      "quantity": 10,
+      "entry_credit": 0.5650000000000001,
+      "expiry": "2026-09-04",
+      "legs": [
+        "XLK260904P00183000",
+        "XLK260904P00182000",
+        "XLK260904C00187500",
+        "XLK260904C00190000"
+      ],
+      "gates": {
+        "iv_regime_mode": "hackathon_static",
+        "underlying_price": 185.66,
+        "iv_rv_spread": 0.085,
+        "credit_to_width": 0.22600000000000003,
+        "max_loss_per_contract": 193.5,
+        "order_risk": 1935.0,
+        "max_risk_allowed": 1956.5956
+      },
+      "officer": {
+        "provider": "featherless",
+        "approved": true,
+        "thesis": "The proposed iron condor trade aligns with the high volatility regime, given the elevated IV and positive IV-RV spread. The neutral RSI and contango VIX term structure support a range-bound market, making the iron condor structure appropriate."
+      }
+    },
+    {
+      "kind": "opened",
+      "at": "2026-09-03T12:31:43.433975-04:00",
+      "id": "ff0afc88-8564-422f-95ec-a3e0bb8ed62f",
+      "symbol": "SLV",
+      "structure": "iron_condor",
+      "regime": null,
+      "detail": "fill confirmed \u2014 16x SLV iron_condor"
+    },
+    {
+      "kind": "opened",
+      "at": "2026-09-03T12:31:43.433975-04:00",
+      "id": "b9979f58-7def-47e7-9d1a-af626c02690f",
+      "symbol": "XLK",
+      "structure": "iron_condor",
+      "regime": null,
+      "detail": "fill confirmed \u2014 10x XLK iron_condor"
+    },
+    {
+      "kind": "closed",
+      "at": "2026-09-03T12:31:43.433975-04:00",
+      "id": "ff0afc88-8564-422f-95ec-a3e0bb8ed62f",
+      "symbol": "SLV",
+      "structure": "iron_condor",
+      "reason": "expiry",
+      "pnl": 40.0,
+      "quantity": 16
+    },
+    {
+      "kind": "closed",
+      "at": "2026-09-03T12:31:43.433975-04:00",
+      "id": "b9979f58-7def-47e7-9d1a-af626c02690f",
+      "symbol": "XLK",
+      "structure": "iron_condor",
+      "reason": "expiry",
+      "pnl": 15.0,
+      "quantity": 10
+    },
+    {
+      "kind": "submitted",
+      "at": "2026-09-03T12:31:43.433975-04:00",
+      "id": "d3d12aa3-d3d0-4247-b8fa-8b0bdf26e2f1",
+      "symbol": "GLD",
+      "structure": "long_strangle",
+      "regime": "Regime B: Low IV / Range-Bound -> Long Strangle",
+      "detail": "9x GLD long_strangle exp 2026-09-04 debit $2.03 width $0.00 [BP:GLD260904P00407000 BC:GLD260904C00416000]",
+      "quantity": 9,
+      "entry_credit": -2.0250000000000004,
+      "expiry": "2026-09-04",
+      "legs": [
+        "GLD260904P00407000",
+        "GLD260904C00416000"
+      ],
+      "gates": {
+        "iv_regime_mode": "hackathon_static",
+        "underlying_price": 412.37,
+        "iv_rv_spread": -0.0924,
+        "credit_to_width": null,
+        "max_loss_per_contract": 202.50000000000003,
+        "order_risk": 1822.5000000000002,
+        "max_risk_allowed": 1945.6516000000001
+      },
+      "officer": {
+        "provider": "featherless",
+        "approved": true,
+        "thesis": "The proposed long strangle on GLD fits the current regime of low IV and range-bound conditions, with IV significantly below RV, suggesting potential mean reversion. The macro context and recent headlines do not indicate any high-impact events that would materially alter the trade's risk profile."
+      }
+    },
+    {
+      "kind": "order_abandoned",
+      "at": "2026-09-03T13:22:37.795987-04:00",
+      "id": "d3d12aa3-d3d0-4247-b8fa-8b0bdf26e2f1",
+      "symbol": "GLD",
+      "structure": "long_strangle",
+      "reason": "canceled"
+    },
+    {
+      "kind": "submitted",
+      "at": "2026-09-03T13:49:53.496606-04:00",
+      "id": "dbf5f0f6-9c71-4205-82c9-f9ddc72b8019",
+      "symbol": "SPY",
+      "structure": "bull_put",
+      "regime": "HARVEST: bullish sentiment (score 2) -> Bull Put credit spread",
+      "detail": "3x SPY bull_put exp 2026-09-04 credit $0.79 width $5.00 [SP:SPY260904P00771000 BP:SPY260904P00766000]",
+      "quantity": 3,
+      "entry_credit": 0.79,
+      "expiry": "2026-09-04",
+      "legs": [
+        "SPY260904P00771000",
+        "SPY260904P00766000"
+      ],
+      "gates": {
+        "iv_regime_mode": "hackathon_static",
+        "underlying_price": 772.995,
+        "iv_rv_spread": -0.0049,
+        "credit_to_width": 0.158,
+        "max_loss_per_contract": 421.0,
+        "order_risk": 1263.0,
+        "max_risk_allowed": 1459.0496999999998
+      },
+      "officer": {
+        "provider": "ollama",
+        "approved": true,
+        "thesis": "The proposed bull_put credit spread structure fits the stated regime, harvesting bullish sentiment, and the current volatility backdrop, with a negative IV-RV spread, supports this directional play. Given the neutral macro context and a 14-day RSI of 62.9, which is not overbought/oversold against the direction of the proposed trade, adding this exposure does not seem imprudent."
+      }
+    },
+    {
+      "kind": "submitted",
+      "at": "2026-09-03T13:49:53.496606-04:00",
+      "id": "794beca4-2cde-4e37-949c-ce78b3ca0245",
+      "symbol": "IWM",
+      "structure": "bull_put",
+      "regime": "HARVEST: bullish sentiment (score 1) -> Bull Put credit spread",
+      "detail": "3x IWM bull_put exp 2026-09-04 credit $0.52 width $5.00 [SP:IWM260904P00294000 BP:IWM260904P00289000]",
+      "quantity": 3,
+      "entry_credit": 0.52,
+      "expiry": "2026-09-04",
+      "legs": [
+        "IWM260904P00294000",
+        "IWM260904P00289000"
+      ],
+      "gates": {
+        "iv_regime_mode": "hackathon_static",
+        "underlying_price": 295.21000000000004,
+        "iv_rv_spread": -0.0065,
+        "credit_to_width": 0.10400000000000001,
+        "max_loss_per_contract": 448.00000000000006,
+        "order_risk": 1344.0000000000002,
+        "max_risk_allowed": 1459.0496999999998
+      },
+      "officer": {
+        "provider": "featherless",
+        "approved": true,
+        "thesis": "The trade aligns with the bullish sentiment and the regime's criteria. The IV is slightly below the realized volatility, but not enough to indicate a significant mispricing, and the RSI is neutral, supporting a range-bound strategy. The macro context does not present any high-impact events that would warrant increased scrutiny or vetoing the trade."
+      }
+    },
+    {
+      "kind": "opened",
+      "at": "2026-09-03T13:53:19.280798-04:00",
+      "id": "dbf5f0f6-9c71-4205-82c9-f9ddc72b8019",
+      "symbol": "SPY",
+      "structure": "bull_put",
+      "regime": null,
+      "detail": "fill confirmed \u2014 3x SPY bull_put"
+    },
+    {
+      "kind": "opened",
+      "at": "2026-09-03T13:53:19.280798-04:00",
+      "id": "794beca4-2cde-4e37-949c-ce78b3ca0245",
+      "symbol": "IWM",
+      "structure": "bull_put",
+      "regime": null,
+      "detail": "fill confirmed \u2014 3x IWM bull_put"
+    },
+    {
+      "kind": "closed",
+      "at": "2026-09-03T13:53:19.280798-04:00",
+      "id": "dbf5f0f6-9c71-4205-82c9-f9ddc72b8019",
+      "symbol": "SPY",
+      "structure": "bull_put",
+      "reason": "expiry",
+      "pnl": 30.0,
+      "quantity": 3
+    },
+    {
+      "kind": "closed",
+      "at": "2026-09-03T13:53:19.280798-04:00",
+      "id": "794beca4-2cde-4e37-949c-ce78b3ca0245",
+      "symbol": "IWM",
+      "structure": "bull_put",
+      "reason": "expiry",
+      "pnl": -12.0,
+      "quantity": 3
+    },
+    {
+      "kind": "submitted",
+      "at": "2026-09-03T13:53:19.280798-04:00",
+      "id": "2de4751f-e1d7-4761-aece-7c36d6849427",
+      "symbol": "QQQ",
+      "structure": "iron_condor",
+      "regime": "Regime A: High Volatility -> Iron Condor",
+      "detail": "3x QQQ iron_condor exp 2026-09-04 credit $1.66 width $6.00 [SP:QQQ260904P00714000 BP:QQQ260904P00708000 SC:QQQ260904C00722000 BC:QQQ260904C00726000]",
+      "quantity": 3,
+      "entry_credit": 1.6649999999999998,
+      "expiry": "2026-09-04",
+      "legs": [
+        "QQQ260904P00714000",
+        "QQQ260904P00708000",
+        "QQQ260904C00722000",
+        "QQQ260904C00726000"
+      ],
+      "gates": {
+        "iv_regime_mode": "hackathon_static",
+        "underlying_price": 718.025,
+        "iv_rv_spread": 0.0436,
+        "credit_to_width": 0.27749999999999997,
+        "max_loss_per_contract": 433.5,
+        "order_risk": 1300.5,
+        "max_risk_allowed": 1459.0901999999999
+      },
+      "officer": {
+        "provider": "debate/featherless",
+        "approved": true,
+        "thesis": "The proposed iron condor trade fits the high volatility regime, supported by the elevated IV and positive IV-RV spread. The neutral RSI and contango VIX term structure indicate a stable market environment suitable for a range-bound, premium-selling strategy. The upcoming NFP report adds some uncertainty, but the trade's defined risk and current market conditions justify the exposure."
+      }
+    },
+    {
+      "kind": "opened",
+      "at": "2026-09-03T13:55:55.275901-04:00",
+      "id": "2de4751f-e1d7-4761-aece-7c36d6849427",
+      "symbol": "QQQ",
+      "structure": "iron_condor",
+      "regime": null,
+      "detail": "fill confirmed \u2014 3x QQQ iron_condor"
+    },
+    {
+      "kind": "closed",
+      "at": "2026-09-03T13:55:55.275901-04:00",
+      "id": "2de4751f-e1d7-4761-aece-7c36d6849427",
+      "symbol": "QQQ",
+      "structure": "iron_condor",
+      "reason": "expiry",
+      "pnl": 19.5,
+      "quantity": 3
+    },
+    {
+      "kind": "submitted",
+      "at": "2026-09-03T13:55:55.275901-04:00",
+      "id": "1ae65f0f-f78d-4472-98f3-09181ef69653",
+      "symbol": "QQQ",
+      "structure": "iron_condor",
+      "regime": "Regime A: High Volatility -> Iron Condor",
+      "detail": "3x QQQ iron_condor exp 2026-09-04 credit $1.56 width $6.00 [SP:QQQ260904P00714000 BP:QQQ260904P00708000 SC:QQQ260904C00722000 BC:QQQ260904C00726000]",
+      "quantity": 3,
+      "entry_credit": 1.56,
+      "expiry": "2026-09-04",
+      "legs": [
+        "QQQ260904P00714000",
+        "QQQ260904P00708000",
+        "QQQ260904C00722000",
+        "QQQ260904C00726000"
+      ],
+      "gates": {
+        "iv_regime_mode": "hackathon_static",
+        "underlying_price": 718.01,
+        "iv_rv_spread": 0.0472,
+        "credit_to_width": 0.26,
+        "max_loss_per_contract": 443.99999999999994,
+        "order_risk": 1331.9999999999998,
+        "max_risk_allowed": 1458.9012
+      },
+      "officer": {
+        "provider": "featherless",
+        "approved": true,
+        "thesis": "The proposed iron condor trade aligns well with the high volatility regime, as indicated by the elevated IV and positive IV-RV spread. The neutral RSI and contango VIX term structure further support the suitability of this defined-risk, premium-selling strategy."
+      }
+    },
+    {
+      "kind": "opened",
+      "at": "2026-09-03T13:57:42.021384-04:00",
+      "id": "1ae65f0f-f78d-4472-98f3-09181ef69653",
+      "symbol": "QQQ",
+      "structure": "iron_condor",
+      "regime": null,
+      "detail": "fill confirmed \u2014 3x QQQ iron_condor"
+    },
+    {
+      "kind": "closed",
+      "at": "2026-09-03T13:57:42.021384-04:00",
+      "id": "1ae65f0f-f78d-4472-98f3-09181ef69653",
+      "symbol": "QQQ",
+      "structure": "iron_condor",
+      "reason": "expiry",
+      "pnl": 6.0,
+      "quantity": 3
+    },
+    {
+      "kind": "submitted",
+      "at": "2026-09-03T13:57:42.021384-04:00",
+      "id": "12b3b839-14b9-4e11-93cd-0ab4d62f51db",
+      "symbol": "QQQ",
+      "structure": "iron_condor",
+      "regime": "Regime A: High Volatility -> Iron Condor",
+      "detail": "3x QQQ iron_condor exp 2026-09-04 credit $1.65 width $6.00 [SP:QQQ260904P00714000 BP:QQQ260904P00708000 SC:QQQ260904C00722000 BC:QQQ260904C00726000]",
+      "quantity": 3,
+      "entry_credit": 1.65,
+      "expiry": "2026-09-04",
+      "legs": [
+        "QQQ260904P00714000",
+        "QQQ260904P00708000",
+        "QQQ260904C00722000",
+        "QQQ260904C00726000"
+      ],
+      "gates": {
+        "iv_regime_mode": "hackathon_static",
+        "underlying_price": 717.985,
+        "iv_rv_spread": 0.0448,
+        "credit_to_width": 0.27499999999999997,
+        "max_loss_per_contract": 434.99999999999994,
+        "order_risk": 1304.9999999999998,
+        "max_risk_allowed": 1458.7571999999998
+      },
+      "officer": {
+        "provider": "featherless",
+        "approved": true,
+        "thesis": "The proposed trade aligns well with the high-volatility regime, where the IV is significantly higher than the RV, and the 14-day RSI is neutral, indicating a balanced, non-trending market. The macro context and current market conditions support the use of an iron condor to capture premium in a potentially range-bound environment."
+      }
+    },
+    {
+      "kind": "opened",
+      "at": "2026-09-03T13:59:22.328287-04:00",
+      "id": "12b3b839-14b9-4e11-93cd-0ab4d62f51db",
+      "symbol": "QQQ",
+      "structure": "iron_condor",
+      "regime": null,
+      "detail": "fill confirmed \u2014 3x QQQ iron_condor"
+    },
+    {
+      "kind": "closed",
+      "at": "2026-09-03T13:59:22.328287-04:00",
+      "id": "12b3b839-14b9-4e11-93cd-0ab4d62f51db",
+      "symbol": "QQQ",
+      "structure": "iron_condor",
+      "reason": "expiry",
+      "pnl": 30.0,
+      "quantity": 3
+    },
+    {
+      "kind": "submitted",
+      "at": "2026-09-03T13:59:22.328287-04:00",
+      "id": "12c95670-2ebd-4bf1-ad6a-eadb03024456",
+      "symbol": "QQQ",
+      "structure": "iron_condor",
+      "regime": "Regime A: High Volatility -> Iron Condor",
+      "detail": "3x QQQ iron_condor exp 2026-09-04 credit $1.52 width $6.00 [SP:QQQ260904P00714000 BP:QQQ260904P00708000 SC:QQQ260904C00722000 BC:QQQ260904C00726000]",
+      "quantity": 3,
+      "entry_credit": 1.52,
+      "expiry": "2026-09-04",
+      "legs": [
+        "QQQ260904P00714000",
+        "QQQ260904P00708000",
+        "QQQ260904C00722000",
+        "QQQ260904C00726000"
+      ],
+      "gates": {
+        "iv_regime_mode": "hackathon_static",
+        "underlying_price": 717.9300000000001,
+        "iv_rv_spread": 0.047,
+        "credit_to_width": 0.25333333333333335,
+        "max_loss_per_contract": 448.00000000000006,
+        "order_risk": 1344.0000000000002,
+        "max_risk_allowed": 1458.6582
+      },
+      "officer": {
+        "provider": "debate/featherless",
+        "approved": true,
+        "thesis": "The proposed iron condor trade aligns with the high volatility regime, where IV is significantly richer than RV, providing a favorable edge. The neutral 14-day RSI and cont .83 VIX/VXV ratio indicate a stable market environment suitable for premium selling. The upcoming NFP report does introduce some uncertainty, but the trade's manageable risk profile and the current low exposure make it a prudent addition to the portfolio."
+      }
+    },
+    {
+      "kind": "opened",
+      "at": "2026-09-03T14:02:11.833529-04:00",
+      "id": "12c95670-2ebd-4bf1-ad6a-eadb03024456",
+      "symbol": "QQQ",
+      "structure": "iron_condor",
+      "regime": null,
+      "detail": "fill confirmed \u2014 3x QQQ iron_condor"
+    },
+    {
+      "kind": "closed",
+      "at": "2026-09-03T14:02:11.833529-04:00",
+      "id": "12c95670-2ebd-4bf1-ad6a-eadb03024456",
+      "symbol": "QQQ",
+      "structure": "iron_condor",
+      "reason": "expiry",
+      "pnl": -30.0,
+      "quantity": 3
+    },
+    {
+      "kind": "submitted",
+      "at": "2026-09-03T14:02:11.833529-04:00",
+      "id": "b4736237-7c31-4b7c-bc4d-f07af1a61314",
+      "symbol": "SPY",
+      "structure": "bull_put",
+      "regime": "HARVEST: bullish sentiment (score 2) -> Bull Put credit spread",
+      "detail": "3x SPY bull_put exp 2026-09-04 credit $0.83 width $5.00 [SP:SPY260904P00772000 BP:SPY260904P00767000]",
+      "quantity": 3,
+      "entry_credit": 0.8300000000000001,
+      "expiry": "2026-09-04",
+      "legs": [
+        "SPY260904P00772000",
+        "SPY260904P00767000"
+      ],
+      "gates": {
+        "iv_regime_mode": "hackathon_static",
+        "underlying_price": 773.855,
+        "iv_rv_spread": 0.0314,
+        "credit_to_width": 0.166,
+        "max_loss_per_contract": 417.0,
+        "order_risk": 1251.0,
+        "max_risk_allowed": 1458.2441999999999
+      },
+      "officer": {
+        "provider": "debate/featherless",
+        "approved": true,
+        "thesis": "The trade aligns with the current bullish sentiment and the regime's criteria for a bull put spread. The IV is richer than the realized volatility, providing a favorable environment for selling premium. The neutral RSI and contango VIX term structure indicate a balanced market, reducing the risk of overbought conditions and excessive volatility. While there are some geopolitical tensions, they do not present a high-impact event that would significantly alter the risk profile of this trade."
+      }
+    },
+    {
+      "kind": "opened",
+      "at": "2026-09-03T14:04:43.185301-04:00",
+      "id": "b4736237-7c31-4b7c-bc4d-f07af1a61314",
+      "symbol": "SPY",
+      "structure": "bull_put",
+      "regime": null,
+      "detail": "fill confirmed \u2014 3x SPY bull_put"
+    },
+    {
+      "kind": "closed",
+      "at": "2026-09-03T14:04:43.185301-04:00",
+      "id": "b4736237-7c31-4b7c-bc4d-f07af1a61314",
+      "symbol": "SPY",
+      "structure": "bull_put",
+      "reason": "expiry",
+      "pnl": -9.0,
+      "quantity": 3
+    },
+    {
+      "kind": "submitted",
+      "at": "2026-09-03T14:04:43.185301-04:00",
+      "id": "20bd1735-272b-439f-9780-ea93f8240101",
+      "symbol": "SPY",
+      "structure": "bull_put",
+      "regime": "HARVEST: bullish sentiment (score 2) -> Bull Put credit spread",
+      "detail": "3x SPY bull_put exp 2026-09-04 credit $0.87 width $5.00 [SP:SPY260904P00772000 BP:SPY260904P00767000]",
+      "quantity": 3,
+      "entry_credit": 0.8699999999999999,
+      "expiry": "2026-09-04",
+      "legs": [
+        "SPY260904P00772000",
+        "SPY260904P00767000"
+      ],
+      "gates": {
+        "iv_regime_mode": "hackathon_static",
+        "underlying_price": 773.7049999999999,
+        "iv_rv_spread": -0.0014,
+        "credit_to_width": 0.174,
+        "max_loss_per_contract": 413.0,
+        "order_risk": 1239.0,
+        "max_risk_allowed": 1458.1024499999999
+      },
+      "officer": {
+        "provider": "featherless",
+        "approved": true,
+        "thesis": "The proposed bull put spread on SPY aligns with the current bullish regime and neutral RSI, indicating a suitable market environment for this strategy. The IV is slightly lower than realized volatility, which is acceptable given the neutral to slightly bearish IV regime and the overall stable market conditions indicated by the VIX term structure in contango."
+      }
+    },
+    {
+      "kind": "opened",
+      "at": "2026-09-03T14:06:25.560827-04:00",
+      "id": "20bd1735-272b-439f-9780-ea93f8240101",
+      "symbol": "SPY",
+      "structure": "bull_put",
+      "regime": null,
+      "detail": "fill confirmed \u2014 3x SPY bull_put"
+    },
+    {
+      "kind": "closed",
+      "at": "2026-09-03T14:06:25.560827-04:00",
+      "id": "20bd1735-272b-439f-9780-ea93f8240101",
+      "symbol": "SPY",
+      "structure": "bull_put",
+      "reason": "expiry",
+      "pnl": 15.0,
+      "quantity": 3
+    },
+    {
+      "kind": "submitted",
+      "at": "2026-09-03T14:06:25.560827-04:00",
+      "id": "6d7a43d8-06ac-4659-ad54-06e2e4335b68",
+      "symbol": "QQQ",
+      "structure": "long_strangle",
+      "regime": "Regime B: Low IV / Range-Bound -> Long Strangle",
+      "detail": "7x QQQ long_strangle exp 2026-09-04 debit $2.05 width $0.00 [BP:QQQ260904P00714000 BC:QQQ260904C00723000]",
+      "quantity": 7,
+      "entry_credit": -2.0500000000000003,
+      "expiry": "2026-09-04",
+      "legs": [
+        "QQQ260904P00714000",
+        "QQQ260904C00723000"
+      ],
+      "gates": {
+        "iv_regime_mode": "hackathon_static",
+        "underlying_price": 718.615,
+        "iv_rv_spread": -0.0247,
+        "credit_to_width": null,
+        "max_loss_per_contract": 205.00000000000003,
+        "order_risk": 1435.0000000000002,
+        "max_risk_allowed": 1458.00795
+      },
+      "officer": {
+        "provider": "featherless",
+        "approved": true,
+        "thesis": "The proposed long strangle trade aligns with the current regime of low IV and range-bound conditions, where the IV-RV spread suggests potential mean reversion. The macro context, including the neutral RSI and stable VIX term structure, supports the trade without indicating significant immediate risks."
+      }
+    },
+    {
+      "kind": "opened",
+      "at": "2026-09-03T14:08:22.420056-04:00",
+      "id": "6d7a43d8-06ac-4659-ad54-06e2e4335b68",
+      "symbol": "QQQ",
+      "structure": "long_strangle",
+      "regime": null,
+      "detail": "fill confirmed \u2014 7x QQQ long_strangle"
+    },
+    {
+      "kind": "closed",
+      "at": "2026-09-03T14:08:22.420056-04:00",
+      "id": "6d7a43d8-06ac-4659-ad54-06e2e4335b68",
+      "symbol": "QQQ",
+      "structure": "long_strangle",
+      "reason": "expiry",
+      "pnl": -3.5,
+      "quantity": 7
+    },
+    {
+      "kind": "submitted",
+      "at": "2026-09-03T14:08:22.420056-04:00",
+      "id": "94e21623-cbc4-4fb0-8187-1eebf8bfabe8",
+      "symbol": "SPY",
+      "structure": "bull_put",
+      "regime": "HARVEST: bullish sentiment (score 2) -> Bull Put credit spread",
+      "detail": "3x SPY bull_put exp 2026-09-04 credit $0.90 width $5.00 [SP:SPY260904P00772000 BP:SPY260904P00767000]",
+      "quantity": 3,
+      "entry_credit": 0.9000000000000001,
+      "expiry": "2026-09-04",
+      "legs": [
+        "SPY260904P00772000",
+        "SPY260904P00767000"
+      ],
+      "gates": {
+        "iv_regime_mode": "hackathon_static",
+        "underlying_price": 773.685,
+        "iv_rv_spread": 0.0424,
+        "credit_to_width": 0.18000000000000002,
+        "max_loss_per_contract": 409.99999999999994,
+        "order_risk": 1229.9999999999998,
+        "max_risk_allowed": 1457.6853
+      },
+      "officer": {
+        "provider": "debate/featherless",
+        "approved": true,
+        "thesis": "The proposed bull put spread on SPY aligns with the current regime of bullish sentiment and the strategy's objective of harvesting premium in a stable market. The IV-RV spread indicates a rich IV environment, which enhances the edge, and the neutral RSI and contango VIX term structure support a favorable risk profile. Additionally, the trade fits within the hard risk limits and the current exposure is manageable."
+      }
+    },
+    {
+      "kind": "opened",
+      "at": "2026-09-03T14:10:23.502477-04:00",
+      "id": "94e21623-cbc4-4fb0-8187-1eebf8bfabe8",
+      "symbol": "SPY",
+      "structure": "bull_put",
+      "regime": null,
+      "detail": "fill confirmed \u2014 3x SPY bull_put"
+    },
+    {
+      "kind": "closed",
+      "at": "2026-09-03T14:10:23.502477-04:00",
+      "id": "94e21623-cbc4-4fb0-8187-1eebf8bfabe8",
+      "symbol": "SPY",
+      "structure": "bull_put",
+      "reason": "expiry",
+      "pnl": 16.5,
+      "quantity": 3
+    },
+    {
+      "kind": "submitted",
+      "at": "2026-09-03T14:12:17.407791-04:00",
+      "id": "50175d30-8959-4d47-bc33-0fa9684c9c18",
+      "symbol": "SPY",
+      "structure": "bull_put",
+      "regime": "HARVEST: bullish sentiment (score 2) -> Bull Put credit spread",
+      "detail": "3x SPY bull_put exp 2026-09-04 credit $0.81 width $5.00 [SP:SPY260904P00772000 BP:SPY260904P00767000]",
+      "quantity": 3,
+      "entry_credit": 0.8099999999999998,
+      "expiry": "2026-09-04",
+      "legs": [
+        "SPY260904P00772000",
+        "SPY260904P00767000"
+      ],
+      "gates": {
+        "iv_regime_mode": "hackathon_static",
+        "underlying_price": 773.815,
+        "iv_rv_spread": -0.006,
+        "credit_to_width": 0.16199999999999998,
+        "max_loss_per_contract": 419.00000000000006,
+        "order_risk": 1257.0000000000002,
+        "max_risk_allowed": 1457.6307
+      },
+      "officer": {
+        "provider": "featherless",
+        "approved": true,
+        "thesis": "The proposed bull put spread on SPY aligns with the current bullish sentiment and harvest mode regime. The IV-RV spread is slightly negative, indicating fair pricing, and the 14-day RSI is neutral, supporting a range-bound strategy. The macro context and recent headlines do not indicate any high-impact events that would significantly alter the trade's risk profile."
+      }
+    },
+    {
+      "kind": "opened",
+      "at": "2026-09-03T14:14:53.173027-04:00",
+      "id": "50175d30-8959-4d47-bc33-0fa9684c9c18",
+      "symbol": "SPY",
+      "structure": "bull_put",
+      "regime": null,
+      "detail": "fill confirmed \u2014 3x SPY bull_put"
+    },
+    {
+      "kind": "closed",
+      "at": "2026-09-03T14:14:53.173027-04:00",
+      "id": "50175d30-8959-4d47-bc33-0fa9684c9c18",
+      "symbol": "SPY",
+      "structure": "bull_put",
+      "reason": "expiry",
+      "pnl": -12.0,
+      "quantity": 3
+    },
+    {
+      "kind": "submitted",
+      "at": "2026-09-03T14:14:53.173027-04:00",
+      "id": "d957c31c-4b35-4384-8915-296510a80b53",
+      "symbol": "QQQ",
+      "structure": "iron_condor",
+      "regime": "Regime A: High Volatility -> Iron Condor",
+      "detail": "3x QQQ iron_condor exp 2026-09-04 credit $1.80 width $6.00 [SP:QQQ260904P00715000 BP:QQQ260904P00709000 SC:QQQ260904C00722500 BC:QQQ260904C00727000]",
+      "quantity": 3,
+      "entry_credit": 1.8,
+      "expiry": "2026-09-04",
+      "legs": [
+        "QQQ260904P00715000",
+        "QQQ260904P00709000",
+        "QQQ260904C00722500",
+        "QQQ260904C00727000"
+      ],
+      "gates": {
+        "iv_regime_mode": "hackathon_static",
+        "underlying_price": 718.665,
+        "iv_rv_spread": 0.0476,
+        "credit_to_width": 0.3,
+        "max_loss_per_contract": 420.0,
+        "order_risk": 1260.0,
+        "max_risk_allowed": 1457.5384499999998
+      },
+      "officer": {
+        "provider": "featherless",
+        "approved": true,
+        "thesis": "The proposed iron condor trade aligns well with the high volatility regime, as IV is significantly higher than RV, and the 14-day RSI is neutral, indicating a range-bound market ideal for premium selling. The VIX term structure is in contango, which is a normal market condition, and there are no high-impact events or material news that would increase the risk of this trade."
+      }
+    },
+    {
+      "kind": "opened",
+      "at": "2026-09-03T14:16:36.758486-04:00",
+      "id": "d957c31c-4b35-4384-8915-296510a80b53",
+      "symbol": "QQQ",
+      "structure": "iron_condor",
+      "regime": null,
+      "detail": "fill confirmed \u2014 3x QQQ iron_condor"
+    },
+    {
+      "kind": "closed",
+      "at": "2026-09-03T14:16:36.758486-04:00",
+      "id": "d957c31c-4b35-4384-8915-296510a80b53",
+      "symbol": "QQQ",
+      "structure": "iron_condor",
+      "reason": "expiry",
+      "pnl": 3.0,
+      "quantity": 3
+    },
+    {
+      "kind": "submitted",
+      "at": "2026-09-03T14:16:36.758486-04:00",
+      "id": "5b81e425-3014-4552-bef5-1d63b14c40ce",
+      "symbol": "SPY",
+      "structure": "bull_put",
+      "regime": "HARVEST: bullish sentiment (score 2) -> Bull Put credit spread",
+      "detail": "3x SPY bull_put exp 2026-09-04 credit $0.81 width $5.00 [SP:SPY260904P00772000 BP:SPY260904P00767000]",
+      "quantity": 3,
+      "entry_credit": 0.81,
+      "expiry": "2026-09-04",
+      "legs": [
+        "SPY260904P00772000",
+        "SPY260904P00767000"
+      ],
+      "gates": {
+        "iv_regime_mode": "hackathon_static",
+        "underlying_price": 773.965,
+        "iv_rv_spread": -0.0056,
+        "credit_to_width": 0.162,
+        "max_loss_per_contract": 418.99999999999994,
+        "order_risk": 1256.9999999999998,
+        "max_risk_allowed": 1457.3066999999999
+      },
+      "officer": {
+        "provider": "featherless",
+        "approved": true,
+        "thesis": "The proposed bull put spread aligns with the current bullish sentiment and the strategy regime. The IV is slightly lower than the realized volatility, suggesting a reasonable risk-reward profile, and the 14-day RSI is neutral, supporting the trade."
+      }
+    },
+    {
+      "kind": "opened",
+      "at": "2026-09-03T14:18:28.058324-04:00",
+      "id": "5b81e425-3014-4552-bef5-1d63b14c40ce",
+      "symbol": "SPY",
+      "structure": "bull_put",
+      "regime": null,
+      "detail": "fill confirmed \u2014 3x SPY bull_put"
+    },
+    {
+      "kind": "closed",
+      "at": "2026-09-03T14:18:28.058324-04:00",
+      "id": "5b81e425-3014-4552-bef5-1d63b14c40ce",
+      "symbol": "SPY",
+      "structure": "bull_put",
+      "reason": "expiry",
+      "pnl": -12.0,
+      "quantity": 3
+    },
+    {
+      "kind": "submitted",
+      "at": "2026-09-03T14:18:28.058324-04:00",
+      "id": "6b807485-f389-490d-9833-fdfff0e198c2",
+      "symbol": "QQQ",
+      "structure": "iron_condor",
+      "regime": "Regime A: High Volatility -> Iron Condor",
+      "detail": "3x QQQ iron_condor exp 2026-09-04 credit $1.67 width $6.00 [SP:QQQ260904P00715000 BP:QQQ260904P00709000 SC:QQQ260904C00723000 BC:QQQ260904C00727500]",
+      "quantity": 3,
+      "entry_credit": 1.6700000000000002,
+      "expiry": "2026-09-04",
+      "legs": [
+        "QQQ260904P00715000",
+        "QQQ260904P00709000",
+        "QQQ260904C00723000",
+        "QQQ260904C00727500"
+      ],
+      "gates": {
+        "iv_regime_mode": "hackathon_static",
+        "underlying_price": 718.725,
+        "iv_rv_spread": 0.0445,
+        "credit_to_width": 0.2783333333333334,
+        "max_loss_per_contract": 433.0,
+        "order_risk": 1299.0,
+        "max_risk_allowed": 1457.07495
+      },
+      "officer": {
+        "provider": "featherless",
+        "approved": true,
+        "thesis": "The proposed iron condor trade aligns well with the high-volatility regime and the positive IV-RV spread, indicating that implied volatility is richer than realized volatility. The neutral RSI and contango VIX term structure further support the suitability of this premium-selling strategy, and there are no imminent high-impact events or material news that would significantly alter the trade's risk profile."
+      }
+    },
+    {
+      "kind": "opened",
+      "at": "2026-09-03T14:20:10.541550-04:00",
+      "id": "6b807485-f389-490d-9833-fdfff0e198c2",
+      "symbol": "QQQ",
+      "structure": "iron_condor",
+      "regime": null,
+      "detail": "fill confirmed \u2014 3x QQQ iron_condor"
+    },
+    {
+      "kind": "closed",
+      "at": "2026-09-03T14:20:10.541550-04:00",
+      "id": "6b807485-f389-490d-9833-fdfff0e198c2",
+      "symbol": "QQQ",
+      "structure": "iron_condor",
+      "reason": "expiry",
+      "pnl": 15.0,
+      "quantity": 3
+    },
+    {
+      "kind": "submitted",
+      "at": "2026-09-03T14:20:10.541550-04:00",
+      "id": "1e87e5cf-c4db-40e1-b148-c9d4a2e42584",
+      "symbol": "QQQ",
+      "structure": "long_strangle",
+      "regime": "Regime B: Low IV / Range-Bound -> Long Strangle",
+      "detail": "7x QQQ long_strangle exp 2026-09-04 debit $2.07 width $0.00 [BP:QQQ260904P00714000 BC:QQQ260904C00723000]",
+      "quantity": 7,
+      "entry_credit": -2.0700000000000003,
+      "expiry": "2026-09-04",
+      "legs": [
+        "QQQ260904P00714000",
+        "QQQ260904C00723000"
+      ],
+      "gates": {
+        "iv_regime_mode": "hackathon_static",
+        "underlying_price": 718.6,
+        "iv_rv_spread": -0.0214,
+        "credit_to_width": null,
+        "max_loss_per_contract": 207.00000000000003,
+        "order_risk": 1449.0000000000002,
+        "max_risk_allowed": 1456.8882
+      },
+      "officer": {
+        "provider": "featherless",
+        "approved": true,
+        "thesis": "The proposed long strangle fits the low IV/range-bound regime, with IV significantly below RV and a neutral RSI, suggesting a mean-reversion opportunity. The macro context does not indicate any high-impact events or significant market stress that would warrant vetoing the trade."
+      }
+    },
+    {
+      "kind": "opened",
+      "at": "2026-09-03T14:24:06.654116-04:00",
+      "id": "1e87e5cf-c4db-40e1-b148-c9d4a2e42584",
+      "symbol": "QQQ",
+      "structure": "long_strangle",
+      "regime": null,
+      "detail": "fill confirmed \u2014 7x QQQ long_strangle"
+    },
+    {
+      "kind": "closed",
+      "at": "2026-09-03T14:24:06.654116-04:00",
+      "id": "1e87e5cf-c4db-40e1-b148-c9d4a2e42584",
+      "symbol": "QQQ",
+      "structure": "long_strangle",
+      "reason": "expiry",
+      "pnl": -0.0,
+      "quantity": 7
+    },
+    {
+      "kind": "submitted",
+      "at": "2026-09-03T14:24:06.654116-04:00",
+      "id": "ca0ed3e3-a94b-4bef-9237-d9db6396cf40",
+      "symbol": "QQQ",
+      "structure": "iron_condor",
+      "regime": "Regime A: High Volatility -> Iron Condor",
+      "detail": "4x QQQ iron_condor exp 2026-09-04 credit $1.54 width $5.00 [SP:QQQ260904P00714000 BP:QQQ260904P00709000 SC:QQQ260904C00722500 BC:QQQ260904C00727000]",
+      "quantity": 4,
+      "entry_credit": 1.5350000000000001,
+      "expiry": "2026-09-04",
+      "legs": [
+        "QQQ260904P00714000",
+        "QQQ260904P00709000",
+        "QQQ260904C00722500",
+        "QQQ260904C00727000"
+      ],
+      "gates": {
+        "iv_regime_mode": "hackathon_static",
+        "underlying_price": 718.56,
+        "iv_rv_spread": 0.0311,
+        "credit_to_width": 0.30700000000000005,
+        "max_loss_per_contract": 346.5,
+        "order_risk": 1386.0,
+        "max_risk_allowed": 1456.4583
+      },
+      "officer": {
+        "provider": "featherless",
+        "approved": true,
+        "thesis": "The proposed iron condor trade aligns well with the high volatility regime, as the IV is significantly higher than the realized volatility, and the RSI is neutral, suggesting a non-trending market. The VIX term structure is in contango, which is a normal and stable market condition, further supporting the suitability of this defined-risk, premium-selling strategy."
+      }
+    },
+    {
+      "kind": "opened",
+      "at": "2026-09-03T14:25:46.591270-04:00",
+      "id": "ca0ed3e3-a94b-4bef-9237-d9db6396cf40",
+      "symbol": "QQQ",
+      "structure": "iron_condor",
+      "regime": null,
+      "detail": "fill confirmed \u2014 4x QQQ iron_condor"
+    },
+    {
+      "kind": "closed",
+      "at": "2026-09-03T14:25:46.591270-04:00",
+      "id": "ca0ed3e3-a94b-4bef-9237-d9db6396cf40",
+      "symbol": "QQQ",
+      "structure": "iron_condor",
+      "reason": "expiry",
+      "pnl": -10.0,
+      "quantity": 4
+    },
+    {
+      "kind": "submitted",
+      "at": "2026-09-03T14:25:46.591270-04:00",
+      "id": "56c7ce67-2c65-4a8c-b6c4-7f13c66c86bf",
+      "symbol": "QQQ",
+      "structure": "iron_condor",
+      "regime": "Regime A: High Volatility -> Iron Condor",
+      "detail": "3x QQQ iron_condor exp 2026-09-04 credit $1.78 width $6.00 [SP:QQQ260904P00715000 BP:QQQ260904P00709000 SC:QQQ260904C00722500 BC:QQQ260904C00727000]",
+      "quantity": 3,
+      "entry_credit": 1.7799999999999998,
+      "expiry": "2026-09-04",
+      "legs": [
+        "QQQ260904P00715000",
+        "QQQ260904P00709000",
+        "QQQ260904C00722500",
+        "QQQ260904C00727000"
+      ],
+      "gates": {
+        "iv_regime_mode": "hackathon_static",
+        "underlying_price": 718.715,
+        "iv_rv_spread": 0.0421,
+        "credit_to_width": 0.29666666666666663,
+        "max_loss_per_contract": 422.00000000000006,
+        "order_risk": 1266.0000000000002,
+        "max_risk_allowed": 1456.1471999999999
+      },
+      "officer": {
+        "provider": "featherless",
+        "approved": true,
+        "thesis": "The iron condor structure fits the high volatility regime with IV significantly above RV, and the neutral RSI indicates a range-bound environment ideal for premium selling. The macro context, including the VIX term structure in contango and no high-impact events, supports the trade."
+      }
+    },
+    {
+      "kind": "opened",
+      "at": "2026-09-03T14:27:34.024465-04:00",
+      "id": "56c7ce67-2c65-4a8c-b6c4-7f13c66c86bf",
+      "symbol": "QQQ",
+      "structure": "iron_condor",
+      "regime": null,
+      "detail": "fill confirmed \u2014 3x QQQ iron_condor"
+    },
+    {
+      "kind": "closed",
+      "at": "2026-09-03T14:27:34.024465-04:00",
+      "id": "56c7ce67-2c65-4a8c-b6c4-7f13c66c86bf",
+      "symbol": "QQQ",
+      "structure": "iron_condor",
+      "reason": "expiry",
+      "pnl": 18.0,
+      "quantity": 3
+    },
+    {
+      "kind": "submitted",
+      "at": "2026-09-03T14:27:34.024465-04:00",
+      "id": "f1f083d5-7676-48b4-9c5b-d21a31ffdd5f",
+      "symbol": "SPY",
+      "structure": "bull_put",
+      "regime": "HARVEST: bullish sentiment (score 2) -> Bull Put credit spread",
+      "detail": "3x SPY bull_put exp 2026-09-04 credit $0.87 width $5.00 [SP:SPY260904P00772000 BP:SPY260904P00767000]",
+      "quantity": 3,
+      "entry_credit": 0.8699999999999999,
+      "expiry": "2026-09-04",
+      "legs": [
+        "SPY260904P00772000",
+        "SPY260904P00767000"
+      ],
+      "gates": {
+        "iv_regime_mode": "hackathon_static",
+        "underlying_price": 773.665,
+        "iv_rv_spread": 0.0273,
+        "credit_to_width": 0.174,
+        "max_loss_per_contract": 413.0,
+        "order_risk": 1239.0,
+        "max_risk_allowed": 1456.1066999999998
+      },
+      "officer": {
+        "provider": "debate/featherless",
+        "approved": true,
+        "thesis": "The trade aligns with the current bullish regime and the IV-RV spread indicates a premium-rich environment, which is favorable for a bull put spread. The SPY's neutral RSI and contango VIX term structure support the stability and prudence of this trade, and the recent drawdowns do not justify a veto given the overall favorable conditions."
+      }
+    },
+    {
+      "kind": "opened",
+      "at": "2026-09-03T14:29:26.016101-04:00",
+      "id": "f1f083d5-7676-48b4-9c5b-d21a31ffdd5f",
+      "symbol": "SPY",
+      "structure": "bull_put",
+      "regime": null,
+      "detail": "fill confirmed \u2014 3x SPY bull_put"
+    },
+    {
+      "kind": "closed",
+      "at": "2026-09-03T14:29:26.016101-04:00",
+      "id": "f1f083d5-7676-48b4-9c5b-d21a31ffdd5f",
+      "symbol": "SPY",
+      "structure": "bull_put",
+      "reason": "expiry",
+      "pnl": 7.5,
+      "quantity": 3
+    },
+    {
+      "kind": "submitted",
+      "at": "2026-09-03T14:29:26.016101-04:00",
+      "id": "b3227e20-99bb-4a0b-9f9c-d0c62e8f20d6",
+      "symbol": "SPY",
+      "structure": "bull_put",
+      "regime": "HARVEST: bullish sentiment (score 2) -> Bull Put credit spread",
+      "detail": "3x SPY bull_put exp 2026-09-04 credit $0.90 width $5.00 [SP:SPY260904P00772000 BP:SPY260904P00767000]",
+      "quantity": 3,
+      "entry_credit": 0.9000000000000001,
+      "expiry": "2026-09-04",
+      "legs": [
+        "SPY260904P00772000",
+        "SPY260904P00767000"
+      ],
+      "gates": {
+        "iv_regime_mode": "hackathon_static",
+        "underlying_price": 773.73,
+        "iv_rv_spread": 0.0253,
+        "credit_to_width": 0.18000000000000002,
+        "max_loss_per_contract": 409.99999999999994,
+        "order_risk": 1229.9999999999998,
+        "max_risk_allowed": 1456.00995
+      },
+      "officer": {
+        "provider": "featherless",
+        "approved": true,
+        "thesis": "The proposed bull put spread on SPY aligns with the current bullish sentiment and harvest regime. The IV-RV spread is positive, indicating that implied volatility is still higher than realized volatility, which supports selling premium. The neutral RSI and the absence of high-impact macro events further justify the trade."
+      }
+    },
+    {
+      "kind": "submitted",
+      "at": "2026-09-03T14:29:26.016101-04:00",
+      "id": "4188c762-64b5-40fb-8cc5-54b2dc298728",
+      "symbol": "IWM",
+      "structure": "bull_put",
+      "regime": "HARVEST: bullish sentiment (score 1) -> Bull Put credit spread",
+      "detail": "3x IWM bull_put exp 2026-09-04 credit $0.57 width $5.00 [SP:IWM260904P00294000 BP:IWM260904P00289000]",
+      "quantity": 3,
+      "entry_credit": 0.5650000000000001,
+      "expiry": "2026-09-04",
+      "legs": [
+        "IWM260904P00294000",
+        "IWM260904P00289000"
+      ],
+      "gates": {
+        "iv_regime_mode": "hackathon_static",
+        "underlying_price": 295.055,
+        "iv_rv_spread": -0.009,
+        "credit_to_width": 0.11300000000000002,
+        "max_loss_per_contract": 443.49999999999994,
+        "order_risk": 1330.4999999999998,
+        "max_risk_allowed": 1456.00995
+      },
+      "officer": {
+        "provider": "featherless",
+        "approved": true,
+        "thesis": "The proposed bull put spread on IWM aligns with the current bullish sentiment and the regime's criteria. The IV-RV spread is slightly negative, which is acceptable given the neutral RSI and the overall market conditions, making this a prudent trade to harvest premium."
+      }
+    },
+    {
+      "kind": "opened",
+      "at": "2026-09-03T14:31:29.249781-04:00",
+      "id": "b3227e20-99bb-4a0b-9f9c-d0c62e8f20d6",
+      "symbol": "SPY",
+      "structure": "bull_put",
+      "regime": null,
+      "detail": "fill confirmed \u2014 3x SPY bull_put"
+    },
+    {
+      "kind": "opened",
+      "at": "2026-09-03T14:31:29.249781-04:00",
+      "id": "4188c762-64b5-40fb-8cc5-54b2dc298728",
+      "symbol": "IWM",
+      "structure": "bull_put",
+      "regime": null,
+      "detail": "fill confirmed \u2014 3x IWM bull_put"
+    },
+    {
+      "kind": "closed",
+      "at": "2026-09-03T14:31:29.249781-04:00",
+      "id": "b3227e20-99bb-4a0b-9f9c-d0c62e8f20d6",
+      "symbol": "SPY",
+      "structure": "bull_put",
+      "reason": "expiry",
+      "pnl": -3.0,
+      "quantity": 3
+    },
+    {
+      "kind": "closed",
+      "at": "2026-09-03T14:31:29.249781-04:00",
+      "id": "4188c762-64b5-40fb-8cc5-54b2dc298728",
+      "symbol": "IWM",
+      "structure": "bull_put",
+      "reason": "expiry",
+      "pnl": -19.5,
+      "quantity": 3
+    },
+    {
+      "kind": "submitted",
+      "at": "2026-09-03T14:31:29.249781-04:00",
+      "id": "652c58f3-2fe0-4535-b5c7-8c804c33d874",
+      "symbol": "SPY",
+      "structure": "bull_put",
+      "regime": "HARVEST: bullish sentiment (score 2) -> Bull Put credit spread",
+      "detail": "3x SPY bull_put exp 2026-09-08 credit $0.98 width $5.00 [SP:SPY260908P00771000 BP:SPY260908P00766000]",
+      "quantity": 3,
+      "entry_credit": 0.9799999999999999,
+      "expiry": "2026-09-08",
+      "legs": [
+        "SPY260908P00771000",
+        "SPY260908P00766000"
+      ],
+      "gates": {
+        "iv_regime_mode": "hackathon_static",
+        "underlying_price": 773.595,
+        "iv_rv_spread": 0.0062,
+        "credit_to_width": 0.19599999999999998,
+        "max_loss_per_contract": 402.00000000000006,
+        "order_risk": 1206.0000000000002,
+        "max_risk_allowed": 1455.7332000000001
+      },
+      "officer": {
+        "provider": "debate/featherless",
+        "approved": true,
+        "thesis": "The proposed bull put spread aligns with the current regime and the favorable IV-RV spread, indicating a slightly rich implied volatility environment. The neutral RSI and range-bound ADX suggest a stable market condition, suitable for a credit spread. The macro context does not present any high-impact events that would significantly alter the risk profile of this trade."
+      }
+    },
+    {
+      "kind": "opened",
+      "at": "2026-09-03T14:34:36.033437-04:00",
+      "id": "652c58f3-2fe0-4535-b5c7-8c804c33d874",
+      "symbol": "SPY",
+      "structure": "bull_put",
+      "regime": null,
+      "detail": "fill confirmed \u2014 3x SPY bull_put"
+    },
+    {
+      "kind": "submitted",
+      "at": "2026-09-03T14:34:36.033437-04:00",
+      "id": "13717df8-b7be-46db-9ab8-00b3b5f1aefd",
+      "symbol": "IWM",
+      "structure": "bull_put",
+      "regime": "HARVEST: bullish sentiment (score 1) -> Bull Put credit spread",
+      "detail": "3x IWM bull_put exp 2026-09-08 credit $0.86 width $5.00 [SP:IWM260908P00294000 BP:IWM260908P00289000]",
+      "quantity": 3,
+      "entry_credit": 0.86,
+      "expiry": "2026-09-08",
+      "legs": [
+        "IWM260908P00294000",
+        "IWM260908P00289000"
+      ],
+      "gates": {
+        "iv_regime_mode": "hackathon_static",
+        "underlying_price": 295.03499999999997,
+        "iv_rv_spread": -0.0077,
+        "credit_to_width": 0.172,
+        "max_loss_per_contract": 413.99999999999994,
+        "order_risk": 1241.9999999999998,
+        "max_risk_allowed": 1455.7564499999999
+      },
+      "officer": {
+        "provider": "featherless",
+        "approved": true,
+        "thesis": "The proposed bull put spread on IWM aligns with the bullish sentiment regime and the current neutral RSI, suggesting the market is not overbought. The IV-RV spread is slightly negative, but not significantly, and the VIX term structure is in contango, indicating a stable market environment suitable for this trade."
+      }
+    },
+    {
+      "kind": "opened",
+      "at": "2026-09-03T14:35:59.059943-04:00",
+      "id": "13717df8-b7be-46db-9ab8-00b3b5f1aefd",
+      "symbol": "IWM",
+      "structure": "bull_put",
+      "regime": null,
+      "detail": "fill confirmed \u2014 3x IWM bull_put"
+    }
+  ],
+  "last_daily_summary_date": "2026-09-03",
+  "last_heartbeat_at": "2026-09-04T09:29:44.311970-04:00",
+  "last_morning_brief_date": "2026-09-04",
+  "last_post_mortem_date": "2026-09-03",
+  "daily_activity": {
+    "2026-09-02": {
+      "date": "2026-09-02",
+      "basket_size": 12,
+      "ticker_scans": 410,
+      "proposed": 225,
+      "approved": 8,
+      "rm_vetoes": 215,
+      "ro_vetoes": 2,
+      "regimes": {
+        "Regime OVERRIDE: MACRO_DANGER -> Long Strangle (vetoed short-vol iron_condor)": 198,
+        "Regime B: Low IV / Range-Bound -> Long Strangle": 27,
+        "No trade": 104
+      }
+    },
+    "2026-09-03": {
+      "date": "2026-09-03",
+      "basket_size": 3,
+      "ticker_scans": 447,
+      "proposed": 165,
+      "approved": 40,
+      "rm_vetoes": 98,
+      "ro_vetoes": 27,
+      "regimes": {
+        "Regime OVERRIDE: MACRO_DANGER -> Long Strangle (vetoed short-vol iron_condor)": 48,
+        "No trade": 98,
+        "Regime B: Low IV / Range-Bound -> Long Strangle": 38,
+        "ADX OVERRIDE: ADX 27.0 >= 25 (strong up-trend) -> Bull Put (condor disabled)": 1,
+        "Regime A: High Volatility -> Iron Condor": 45,
+        "ADX OVERRIDE: ADX 27.1 >= 25 (strong up-trend) -> Bull Put (condor disabled)": 6,
+        "HARVEST: bullish sentiment (score 1) -> Bull Put credit spread": 40,
+        "HARVEST: bullish sentiment (score 2) -> Bull Put credit spread": 21
+      }
+    }
+  },
+  "hard_stop_done": true
+}

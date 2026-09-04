@@ -29,16 +29,16 @@ const SIGNAL = "#F5A623"; // the one accent — "signal" amber, used everywhere
 const STATS = [
   {
     label: "Starting equity",
-    value: "$99,870.90",
-    note: "Dedicated $100k paper account, persisted on first run.",
+    value: "$100,000.00",
+    note: "Dedicated paper account, verified against Alpaca's own portfolio-history baseline.",
     span: "md:col-span-1",
   },
   {
     label: "Net P&L",
-    value: "-$2,893.63",
-    sub: "-2.90%",
+    value: "-$3,131.03",
+    sub: "-3.13%",
     tone: "loss",
-    note: "Open + realised, marked against the starting balance.",
+    note: "Fully realised — every leg closed flat at the session's final market open.",
     span: "md:col-span-2",
   },
   {

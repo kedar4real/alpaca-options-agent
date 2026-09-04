@@ -372,11 +372,17 @@ def _normalise_trade(h: dict) -> dict:
 # account summary
 # --------------------------------------------------------------------------- #
 def account_summary(session: dict, closing_equity: float,
-                    *, force_stopped_flat: bool = False) -> dict:
+                    *, force_stopped_flat: bool = False,
+                    base_equity: float | None = None) -> dict:
     """Headline numbers for the sidebar. ``force_stopped_flat`` presents the
     account as STOPPED / FLAT regardless of the live position count (this is a
-    retrospective audit view — the agent's session is over)."""
-    starting = float(session.get("starting_equity") or 0.0)
+    retrospective audit view — the agent's session is over).
+
+    ``base_equity`` — the account's actual funding baseline (e.g. Alpaca's
+    portfolio-history ``base_value``) — takes precedence over the agent's own
+    persisted ``session.json`` ``starting_equity`` when supplied, so headline
+    P&L matches the baseline used elsewhere (e.g. the landing page)."""
+    starting = float(base_equity) if base_equity else float(session.get("starting_equity") or 0.0)
     current = float(closing_equity)
     pnl_abs = current - starting
     pnl_pct = (pnl_abs / starting * 100.0) if starting else 0.0

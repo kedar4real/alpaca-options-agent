@@ -274,6 +274,23 @@ def test_account_summary_status_is_stopped_flat_when_forced() -> None:
     assert s["is_flat"] is True
 
 
+def test_account_summary_prefers_explicit_base_equity_over_session() -> None:
+    # The account's actual funding baseline (Alpaca portfolio-history base_value)
+    # takes precedence over session.json's persisted starting_equity, so the
+    # headline P&L matches the same $100,000.00 baseline used elsewhere in the
+    # submission (e.g. the landing page).
+    s = ad.account_summary(SESSION, closing_equity=96868.97, base_equity=100000.0)
+    assert s["starting"] == pytest.approx(100000.0)
+    assert s["pnl_abs"] == pytest.approx(-3131.03, abs=0.01)
+    assert s["pnl_pct"] == pytest.approx(-3.131, abs=0.01)
+
+
+def test_account_summary_falls_back_to_session_starting_equity() -> None:
+    # No base_equity supplied (or falsy) -> unchanged legacy behaviour.
+    s = ad.account_summary(SESSION, closing_equity=96977.27, base_equity=None)
+    assert s["starting"] == pytest.approx(99870.9)
+
+
 def test_account_summary_reports_live_state_when_not_forced() -> None:
     s = ad.account_summary(SESSION, closing_equity=96977.27)
     assert s["is_flat"] is False           # 2 open condors in the fixture

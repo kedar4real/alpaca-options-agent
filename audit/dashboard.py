@@ -28,6 +28,7 @@ except ImportError:  # pragma: no cover
 ROOT = Path(os.environ.get("AUDIT_ROOT", Path(__file__).resolve().parent.parent))
 SESSION_PATH = ROOT / "session.json"
 ACTIVITY_PATH = ROOT / "logs" / "agent_activity.log"
+AGENT_LOG_PATH = ROOT / "logs" / "agent.log"
 AUDIT_MD_PATH = ROOT / "REPORTS" / "FINAL_SESSION_AUDIT.md"
 SNAPSHOT_PATH = ROOT / "REPORTS" / "audit_snapshot.json"
 JOURNAL_PATH = ROOT / "journal.md"
@@ -179,12 +180,14 @@ def _mtime(p: Path) -> float:
 def load_all(_sig: tuple[float, ...]) -> dict:
     session = ad.load_session(SESSION_PATH)
     activity = ad.load_text(ACTIVITY_PATH)
+    agent_log = ad.load_text(AGENT_LOG_PATH)
     audit_md = ad.load_text(AUDIT_MD_PATH)
     snapshot = ad.load_json(SNAPSHOT_PATH)
     closing_equity = float(snapshot.get("equity") or session.get("starting_equity") or 0.0)
     return {
         "session": session,
         "activity": activity,
+        "agent_log": agent_log,
         "audit_md": audit_md,
         "snapshot": snapshot,
         "closing_equity": closing_equity,
@@ -198,10 +201,12 @@ def load_all(_sig: tuple[float, ...]) -> dict:
         "trades": ad.trade_history(session),
         "open_pos": ad.open_positions_detail(session),
         "run_mode": ad.latest_run_mode(activity),
+        "equity_series": ad.equity_series(agent_log, session, snapshot),
     }
 
 
-sig = tuple(_mtime(p) for p in (SESSION_PATH, ACTIVITY_PATH, AUDIT_MD_PATH, SNAPSHOT_PATH))
+sig = tuple(_mtime(p) for p in
+            (SESSION_PATH, ACTIVITY_PATH, AGENT_LOG_PATH, AUDIT_MD_PATH, SNAPSHOT_PATH))
 D = load_all(sig)
 S = D["summary"]
 ctx = D["context"]
@@ -232,6 +237,68 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+
+# --------------------------------------------------------------------------- #
+# 2b. EQUITY CURVE — the headline: where the cage held the line
+# --------------------------------------------------------------------------- #
+_eq = D["equity_series"]
+if len(_eq) >= 2:
+    _MON = {"01": "Jan", "02": "Feb", "03": "Mar", "04": "Apr", "05": "May", "06": "Jun",
+            "07": "Jul", "08": "Aug", "09": "Sep", "10": "Oct", "11": "Nov", "12": "Dec"}
+
+    def _lbl(p: dict) -> str:
+        y, m, d = (p["date"].split("-") + ["", "", ""])[:3]
+        tag = {"start": "start", "logged": "close", "snapshot": "now"}.get(p["source"], p["source"])
+        return f"{_MON.get(m, m)} {int(d):02d} · {tag}" if m and d else p["source"]
+
+    eq_df = pd.DataFrame(_eq)
+    eq_df["label"] = eq_df.apply(_lbl, axis=1)
+    eq_df["anchor"] = eq_df["source"].map({"start": "anchor", "snapshot": "anchor"}).fillna("logged")
+    eq_df["tag"] = eq_df["equity"].map(lambda v: f"${v:,.0f}")
+    lo = float(min(p["equity"] for p in _eq))
+    hi = float(max(p["equity"] for p in _eq))
+    order = list(eq_df["label"])
+
+    _pad = max((hi - lo) * 0.35, 150)
+    _x = alt.X("label:N", sort=order, title=None, axis=alt.Axis(labelAngle=0, grid=False))
+    _y = alt.Y("equity:Q", title="account equity ($)",
+               scale=alt.Scale(zero=False, domain=[round(lo - _pad), round(hi + _pad)]),
+               axis=alt.Axis(format="$,.0f", grid=True))
+    _tt = [alt.Tooltip("label:N", title="point"),
+           alt.Tooltip("equity:Q", title="equity", format="$,.2f"),
+           alt.Tooltip("day_pnl:Q", title="Δ vs prev", format="+$,.0f"),
+           alt.Tooltip("source:N", title="source")]
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Starting equity", f"${S['starting']:,.0f}")
+    m2.metric("Final equity", f"${S['current']:,.0f}")
+    m3.metric("Net P&L", f"{S['pnl_pct']:+.2f}%", delta=f"{S['pnl_abs']:+,.0f} USD",
+              delta_color="inverse")
+    floor_gap = lo - ad.SAFETY_FLOOR_USD
+    m4.metric("Headroom to $95k floor", f"${floor_gap:,.0f}",
+              help="Lowest equity in the window minus the hard floor — the panic line was never approached.")
+
+    eq_chart = (
+        alt.Chart(eq_df)
+        .mark_line(
+            color="#2f3a5c", strokeWidth=3, interpolate="monotone",
+            point={"size": 170, "color": "#2f3a5c", "filled": True,
+                   "stroke": "#ffffff", "strokeWidth": 1.5},
+        )
+        .encode(x=_x, y=_y, tooltip=_tt)
+        .properties(height=260)
+        .configure_view(fill="#ffffff", stroke="#e4e7ec")
+        .configure_axis(labelColor="#5c6472", titleColor="#5c6472")
+    )
+    st.altair_chart(eq_chart, width="stretch")
+    st.caption(
+        "Points labelled **· close** are the agent's own end-of-day **DAILY PERFORMANCE "
+        "SUMMARY** equity marks from `logs/agent.log` — directly logged, not reconstructed "
+        "or interpolated. **· start** is the session's `starting_equity`; **· now** is the "
+        f"live `audit_snapshot.json` (${S['current']:,.0f}). Dates are the trading session; "
+        "the underlying log timestamps are log-local time (IST on the box; ET = IST − 9:30)."
+    )
+    st.divider()
 
 # --------------------------------------------------------------------------- #
 # A. SIDEBAR — the Account Seal

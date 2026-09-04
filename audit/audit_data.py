@@ -434,3 +434,151 @@ def latest_run_mode(activity_text: str) -> list[str]:
         if s and not set(s) <= {"="}:
             bullets.append(s)
     return bullets
+
+
+# --------------------------------------------------------------------------- #
+# Equity time series  (polish pass — NEW, additive)
+# --------------------------------------------------------------------------- #
+# NOTE: reads logs/agent.log — a source the original dashboard did not use.
+_DPS_RE = re.compile(
+    r"Daily Performance Summary \((\w{3}) (\d{1,2}), (\d{4})\).*?"
+    r"Equity:\s*\$([\d,]+).*?day P&L \$([+\-]?[\d,]+)",
+    re.DOTALL,
+)
+_MONTHS = {m: i for i, m in enumerate(
+    ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"], 1)}
+
+
+def _num(s: str) -> float:
+    return float(str(s).replace(",", "").replace("+", "").strip() or 0)
+
+
+def _day_before(iso_date: str) -> str:
+    """'YYYY-MM-DD' one calendar day earlier (used only to place an anchor point)."""
+    from datetime import date, timedelta
+    try:
+        return (date.fromisoformat(iso_date) - timedelta(days=1)).isoformat()
+    except ValueError:
+        return iso_date
+
+
+def daily_equity_marks(agent_log_text: str) -> list[dict]:
+    """Directly-logged end-of-day equity marks from ``logs/agent.log``'s
+    ``DAILY PERFORMANCE SUMMARY`` blocks. ``[]`` when there are none.
+
+    Each row: ``{date: "YYYY-MM-DD", equity: float, day_pnl: float,
+    source: "logged"}`` — ``date`` is the summary's *for* date (the session it
+    reports on), not the wall-clock it was written at.
+    """
+    out = []
+    for mon, day, yr, eq, pnl in _DPS_RE.findall(agent_log_text):
+        mnum = _MONTHS.get(mon)
+        if not mnum:
+            continue
+        out.append({
+            "date": f"{int(yr):04d}-{mnum:02d}-{int(day):02d}",
+            "equity": _num(eq),
+            "day_pnl": _num(pnl),
+            "source": "logged",
+        })
+    out.sort(key=lambda r: r["date"])
+    return out
+
+
+def equity_series(agent_log_text: str, session: dict, snapshot: dict) -> list[dict]:
+    """Chart-ready equity path: the session's starting equity (``source:
+    "start"``), then every logged daily mark (``source: "logged"``), then the
+    live closing snapshot (``source: "snapshot"``) when one is supplied.
+
+    Every point carries an explicit ``source`` so the chart can distinguish
+    *directly logged* marks from the anchor points. Nothing here is
+    reconstructed or interpolated.
+
+    Logged marks dated before the session's ``created_at`` (i.e. from an earlier
+    session on a different baseline) are dropped, so the curve is consistent
+    with :func:`account_summary`'s P&L off ``starting_equity``.
+    """
+    marks = daily_equity_marks(agent_log_text)
+    created = str(session.get("created_at") or "")[:10]
+    if created:
+        marks = [m for m in marks if m["date"] >= created]
+    series: list[dict] = []
+
+    start_eq = session.get("starting_equity")
+    if start_eq is not None:
+        first_mark = marks[0] if marks else None
+        same_point = (
+            first_mark is not None
+            and created == first_mark["date"]
+            and abs(float(start_eq) - first_mark["equity"]) < 1.0
+        )
+        if same_point:
+            start_date = None            # start IS the first logged mark — don't double-plot
+        elif created:
+            start_date = created         # sorts before the same-day EOD mark (stable sort)
+        elif first_mark is not None:
+            start_date = _day_before(first_mark["date"])   # no created_at: sit just before mark 1
+        else:
+            start_date = ""
+        if start_date is not None:
+            series.append({"date": start_date, "equity": float(start_eq),
+                           "day_pnl": 0.0, "source": "start"})
+
+    series.extend(marks)
+
+    snap_eq = snapshot.get("equity") if snapshot else None
+    if snap_eq is not None:
+        snap_date = str(snapshot.get("captured_at") or "")[:10]
+        if not snap_date:
+            snap_date = marks[-1]["date"] if marks else ""
+        prev = series[-1]["equity"] if series else float(snap_eq)
+        series.append({"date": snap_date, "equity": float(snap_eq),
+                       "day_pnl": float(snap_eq) - prev, "source": "snapshot"})
+
+    series.sort(key=lambda r: r["date"])
+    return series
+
+
+# --------------------------------------------------------------------------- #
+# Full-text decision log  (polish pass — NEW, additive)
+# --------------------------------------------------------------------------- #
+# Reads logs/agent.log DECISION SUMMARY lines — full, untruncated reasons
+# (the SCAN TABLE in agent_activity.log clips them at ~72 chars).
+_DECISION_LINE_RE = re.compile(
+    r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)\s+\w+\s+[\w.]+:\s+"
+    r"(?:\[([A-Z]{1,6})\]\s+)?DECISION SUMMARY\s+[—-]\s+"
+    r"(\w+)\s+at\s+\[(\w+)\]:\s+(.+?)\s*$",
+    re.MULTILINE,
+)
+_DECISION_STAGES = ("precheck", "strategy", "risk_manager", "risk_officer", "executor")
+
+
+def decision_log(agent_log_text: str, *, stage: str | None = None,
+                 limit: int = 40) -> list[dict]:
+    """Every ``DECISION SUMMARY`` line from ``logs/agent.log``, newest first.
+
+    Row: ``{ts, symbol|None, outcome, stage, reason}`` — ``ts`` is log local
+    time (IST on the hackathon box; ET = IST - 9:30), ``reason`` is the full
+    untruncated text. ``stage`` filters to one pipeline stage.
+    """
+    rows = []
+    for ts, sym, outcome, stg, reason in _DECISION_LINE_RE.findall(agent_log_text):
+        if stage and stg != stage:
+            continue
+        rows.append({
+            "ts": ts,
+            "symbol": sym or None,
+            "outcome": outcome.lower(),
+            "stage": stg,
+            "reason": reason.strip(),
+        })
+    rows.reverse()
+    return rows[:limit]
+
+
+def decision_log_stage_counts(agent_log_text: str) -> dict:
+    """``{stage: count}`` across every DECISION SUMMARY line (no limit)."""
+    counts = {s: 0 for s in _DECISION_STAGES}
+    for _ts, _sym, _out, stg, _r in _DECISION_LINE_RE.findall(agent_log_text):
+        counts[stg] = counts.get(stg, 0) + 1
+    return {k: v for k, v in counts.items() if v} or {s: 0 for s in _DECISION_STAGES}

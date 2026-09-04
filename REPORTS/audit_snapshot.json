@@ -1,6 +1,6 @@
 {
-  "captured_at": "2026-09-04T09:17:16.374597+00:00",
-  "captured_at_note": "pre-market snapshot, 2026-09-04; agent idle, hard stop pending at the 09:30 ET open",
+  "captured_at": "2026-09-04T10:25:10.961111+00:00",
+  "captured_at_note": "snapshot 2026-09-04 ~06:25 ET \u2014 market not yet open (opens 09:30 ET); the agent's hard-stop flatten is still pending at that open, so 4 option legs (SPY + IWM Sep-8 put spreads) remain on the book.",
   "account_id": "PA3FCNG4S7EO",
   "equity": 96977.27,
   "last_equity": 96971.27,
@@ -29,7 +29,7 @@
       "symbol": "SPY260908P00771000",
       "qty": -3,
       "market_value": -549.0,
-      "unrealized_pl": -42.9999
+      "unrealized_pl": -43.0
     }
   ],
   "open_orders": 0

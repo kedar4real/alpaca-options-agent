@@ -295,3 +295,114 @@ def test_load_session_round_trips(tmp_path) -> None:
 
 def test_load_session_missing_file_returns_empty_dict(tmp_path) -> None:
     assert ad.load_session(tmp_path / "nope.json") == {}
+
+
+# =========================================================================== #
+# Polish pass — new pure functions (agent.log equity marks + decision log)
+# =========================================================================== #
+AGENT_LOG = """\
+2026-09-01 01:39:28 INFO    agent: DAILY PERFORMANCE SUMMARY
+============================================================
+SPY Iron Condor Agent — Daily Performance Summary (Aug 31, 2026)
+
+Equity: $100,000   (day P&L $+0 / +0.00%)
+Since start: $+0 / +0.00% (from $100,000)
+Realized P&L on closes today: $+0
+============================================================
+2026-09-02 01:40:11 INFO    agent: DAILY PERFORMANCE SUMMARY
+============================================================
+Multi-Ticker Options Agent — Daily Performance Summary (Sep 01, 2026)
+
+Equity: $99,839   (day P&L $-161 / -0.16%)
+Since start: $-151 / -0.15% (from $99,991)
+Realized P&L on closes today: $+0
+============================================================
+2026-09-04 01:31:13 INFO    agent: DAILY PERFORMANCE SUMMARY
+============================================================
+Multi-Ticker Options Agent — Daily Performance Summary (Sep 03, 2026)
+
+Equity: $97,011   (day P&L $-2,335 / -2.35%)
+Since start: $-2,860 / -2.86% (from $99,871)
+Realized P&L on closes today: $+996
+============================================================
+2026-09-01 20:43:30 INFO    agent: [IWM] DECISION SUMMARY — Vetoed at [risk_officer]: risk_officer VETO (featherless) — The IV-RV spread is only 0.0417, too narrow for the stated high-IV regime; adding exposure into a drawdown raises risk.
+2026-09-03 10:33:28 INFO    agent: [QQQ] DECISION SUMMARY — Executed at [executor]: submitted order d9b7efb8 — 3x QQQ iron_condor exp 2026-09-04 credit $1.77 width $7.00
+2026-09-01 00:54:17 INFO    agent: DECISION SUMMARY — Skipped at [strategy]: strategy did not propose a trade — IV gate blocked: Hackathon Mode: ATM IV 0.113 <= 0.15 (2/10 IV days logged)
+2026-09-04 01:17:32 INFO    agent: [QQQ] DECISION SUMMARY — Blocked at [risk_manager]: risk_manager rejected — correlation guard: QQQ is >0.8 correlated (10d) with open SPY — that cluster already holds its one slot toward the 4-position cap; trade risk $1,468 > $1,455 (1.5% of current equity)
+2026-09-04 01:18:00 INFO    agent: [IWM] DECISION SUMMARY — Skipped at [precheck]: already holds a position or working order in IWM
+"""
+
+
+def test_daily_equity_marks_parses_each_summary_block() -> None:
+    marks = ad.daily_equity_marks(AGENT_LOG)
+    assert [m["date"] for m in marks] == ["2026-08-31", "2026-09-01", "2026-09-03"]
+    assert marks[0]["equity"] == pytest.approx(100_000.0)
+    assert marks[2]["equity"] == pytest.approx(97_011.0)
+    assert marks[2]["day_pnl"] == pytest.approx(-2_335.0)
+    assert marks[2]["source"] == "logged"
+
+
+def test_daily_equity_marks_empty_when_no_summary() -> None:
+    assert ad.daily_equity_marks("nothing here") == []
+
+
+def test_equity_series_anchors_start_and_end() -> None:
+    series = ad.equity_series(AGENT_LOG, SESSION, {"equity": 96977.27, "captured_at": "2026-09-04T10:25:00+00:00"})
+    assert series[0]["source"] == "start"
+    assert series[0]["equity"] == pytest.approx(99_870.9)
+    assert series[-1]["source"] == "snapshot"
+    assert series[-1]["equity"] == pytest.approx(96_977.27)
+    # logged daily marks sit in between, chronologically
+    assert [p["source"] for p in series[1:-1]] == ["logged", "logged", "logged"]
+    assert all(series[i]["date"] <= series[i + 1]["date"] for i in range(len(series) - 1))
+
+
+def test_equity_series_dedupes_a_start_that_equals_first_mark() -> None:
+    # if session start date == first logged mark date, don't emit two points
+    sess = {"starting_equity": 100_000.0, "created_at": "2026-08-31T09:00:00-04:00"}
+    series = ad.equity_series(AGENT_LOG, sess, {"equity": 97_011.0})
+    dates = [p["date"] for p in series]
+    assert dates.count("2026-08-31") == 1
+
+
+def test_equity_series_works_with_no_snapshot() -> None:
+    series = ad.equity_series(AGENT_LOG, SESSION, {})
+    assert series[-1]["source"] == "logged"          # falls back to the last logged mark
+
+
+def test_equity_series_drops_marks_before_the_session_baseline() -> None:
+    # AGENT_LOG has marks on 08-31 / 09-01 / 09-03; a session created 09-02 keeps
+    # only 09-03 and starts from starting_equity, so the curve matches the P&L%.
+    sess = {"starting_equity": 99870.9, "created_at": "2026-09-02T11:53:55-04:00"}
+    series = ad.equity_series(AGENT_LOG, sess, {"equity": 96977.27, "captured_at": "2026-09-04T10:00:00Z"})
+    assert [p["source"] for p in series] == ["start", "logged", "snapshot"]
+    assert series[0]["equity"] == pytest.approx(99870.9)
+    assert series[1]["date"] == "2026-09-03"
+
+
+def test_decision_log_parses_full_untruncated_reasons() -> None:
+    rows = ad.decision_log(AGENT_LOG)
+    # newest first
+    assert rows[0]["ts"].startswith("2026-09-04")
+    corr = [r for r in rows if r["stage"] == "risk_manager"][0]
+    assert corr["symbol"] == "QQQ"
+    assert corr["outcome"] == "blocked"
+    assert "trade risk $1,468 > $1,455 (1.5% of current equity)" in corr["reason"]
+    # a row with no [SYM] prefix still parses
+    strat = [r for r in rows if r["stage"] == "strategy"][0]
+    assert strat["symbol"] is None
+    assert "Hackathon Mode" in strat["reason"]
+
+
+def test_decision_log_stage_filter_and_limit() -> None:
+    only_officer = ad.decision_log(AGENT_LOG, stage="risk_officer")
+    assert {r["stage"] for r in only_officer} == {"risk_officer"}
+    assert ad.decision_log(AGENT_LOG, limit=2) == ad.decision_log(AGENT_LOG)[:2]
+
+
+def test_decision_log_stage_counts() -> None:
+    counts = ad.decision_log_stage_counts(AGENT_LOG)
+    assert counts["risk_manager"] == 1
+    assert counts["executor"] == 1
+    assert counts["strategy"] == 1
+    assert sum(counts.values()) == 5
